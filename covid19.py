@@ -20,6 +20,49 @@ time_series_19_covid_recovered = pd.read_csv(fname)
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Deaths.csv'
 time_series_19_covid_death = pd.read_csv(fname)
 
+yesterday = datetime.date.today() - datetime.timedelta(days=1)
+augment_time_series_from_daily_snapshots_date_range = pd.date_range(start='2020-03-14', end=yesterday)
+augment_time_series_from_daily_snapshots_fname_pattern = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/{}.csv'
+
+def augment_time_series_from_daily_snapshots(date_list):
+    d = date_list[0]
+    date_column_year = d.date().strftime('%y')
+    date_column = '{}/{}/{}'.format(d.date().month, d.date().day, date_column_year)
+    columns_to_drop = list(time_series_19_covid_confirmed.loc[:,date_column:].columns)
+
+    ldf_confirmed_base = time_series_19_covid_confirmed.copy()
+    ldf_confirmed_base.drop(columns=columns_to_drop, inplace=True)
+    ldf_recovered_base = time_series_19_covid_recovered.copy()
+    ldf_recovered_base.drop(columns=columns_to_drop, inplace=True)
+    ldf_death_base = time_series_19_covid_death.copy()
+    ldf_death_base.drop(columns=columns_to_drop, inplace=True)
+
+    for d in date_list:
+        ldf = pd.read_csv(augment_time_series_from_daily_snapshots_fname_pattern.format(d.date().strftime('%m-%d-%Y')))
+        # '3/14/20'
+        date_column_year = d.date().strftime('%y')
+        date_column = '{}/{}/{}'.format(d.date().month, d.date().day, date_column_year)
+
+        ldf_confirmed = ldf[['Province/State', 'Country/Region', 'Confirmed']].copy()
+        ldf_confirmed = ldf_confirmed.rename(columns={'Confirmed': date_column})
+        ldf_confirmed_base = pd.merge(ldf_confirmed_base, ldf_confirmed, how='left', on=['Province/State', 'Country/Region'])
+        ldf_confirmed_base.fillna(-1, inplace=True)
+        ldf_confirmed_base[date_column] = ldf_confirmed_base[date_column].astype(np.int)
+
+        ldf_recovered = ldf[['Province/State', 'Country/Region', 'Recovered']].copy()
+        ldf_recovered = ldf_recovered.rename(columns={'Recovered': date_column})
+        ldf_recovered_base = pd.merge(ldf_recovered_base, ldf_recovered, how='left', on=['Province/State', 'Country/Region'])
+        ldf_recovered_base.fillna(-1, inplace=True)
+        ldf_recovered_base[date_column] = ldf_recovered_base[date_column].astype(np.int)
+
+        ldf_death = ldf[['Province/State', 'Country/Region', 'Deaths']].copy()
+        ldf_death = ldf_death.rename(columns={'Deaths': date_column})
+        ldf_death_base = pd.merge(ldf_death_base, ldf_death, how='left', on=['Province/State', 'Country/Region'])
+        ldf_death_base.fillna(-1, inplace=True)
+        ldf_death_base[date_column] = ldf_death_base[date_column].astype(np.int)
+
+    return ldf_confirmed_base, ldf_recovered_base, ldf_death_base
+
 columns = time_series_19_covid_confirmed.columns[4:]
 dcolumns = [pd.to_datetime(dt) for dt in columns]
 columns[:3],dcolumns[-3:]
@@ -35,9 +78,14 @@ def get_cases_by_region_override(region='Germany'):
     return override_df
 
 def get_cases_by_selector(selector, region='Germany'):
-    ldf_confirmed = time_series_19_covid_confirmed[columns][selector]
-    ldf_recovered = time_series_19_covid_recovered[columns][selector]
-    ldf_death = time_series_19_covid_death[columns][selector]
+    if augment_time_series_from_daily_snapshots_date_range is not None and len(augment_time_series_from_daily_snapshots_date_range) > 0:
+        ldf_confirmed, ldf_recovered, ldf_death = augment_time_series_from_daily_snapshots(augment_time_series_from_daily_snapshots_date_range)
+    else:
+        ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
+
+    ldf_confirmed = ldf_confirmed[columns][selector]
+    ldf_recovered = ldf_recovered[columns][selector]
+    ldf_death     = ldf_death[columns][selector]
 
     if (len(ldf_confirmed) > 1):
         ldf_confirmed = pd.DataFrame(ldf_confirmed.sum(axis=0), columns=['sum']).T
@@ -125,20 +173,26 @@ class CasesByRegion():
 
 
 def get_country_overview():
-    ldf_confirmed = time_series_19_covid_confirmed[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+    if augment_time_series_from_daily_snapshots_date_range is not None and len(augment_time_series_from_daily_snapshots_date_range) > 0:
+        ldf_confirmed, ldf_recovered, ldf_death = augment_time_series_from_daily_snapshots(augment_time_series_from_daily_snapshots_date_range)
+    else:
+        ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
+
+    ldf_confirmed = ldf_confirmed[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+    ldf_recovered = ldf_recovered[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+    ldf_death     = ldf_death[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+
     # confirmed_column_name = 'confirmed_' + str(pd.to_datetime(columns[-1]).date())
     confirmed_column_name = 'confirmed'
     ldf_confirmed.columns = [confirmed_column_name]
-    ldf_recovered = time_series_19_covid_recovered[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
     # recovered_column_name = 'recovered_' + str(pd.to_datetime(columns[-1]).date())
     recovered_column_name = 'recovered'
     ldf_recovered.columns = [recovered_column_name]
-    ldf_death = time_series_19_covid_death[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
     # death_column_name     = 'death_' + str(pd.to_datetime(columns[-1]).date())
     death_column_name = 'death'
     ldf_death.columns = [death_column_name]
 
-    ldf = pd.concat([ldf_confirmed, ldf_recovered, ldf_death], axis=1)
+    ldf = pd.concat([ldf_confirmed, ldf_recovered, ldf_death], axis=1, sort=True)
     for idx, row in ldf.iterrows():
         if idx in override_xlsx.sheet_names:
             ldf_overrid = get_cases_by_region_override(region=idx)
@@ -146,6 +200,7 @@ def get_country_overview():
 
     ldf['death_rate'] = ldf[death_column_name] / ldf[confirmed_column_name] * 100.0
     ldf['death_rate_'] = ldf[death_column_name] / (ldf[recovered_column_name] + ldf[death_column_name] + 1.0) * 100.0
+
     ldf.index.name = ldf.index.name + '_' + str(pd.to_datetime(columns[-1]).date())
     return ldf.sort_values(['death_rate'], ascending=False)
 
