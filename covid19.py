@@ -23,6 +23,8 @@ time_series_19_covid_death = pd.read_csv(fname)
 yesterday = datetime.date.today() - datetime.timedelta(days=1)
 augment_time_series_from_daily_snapshots_date_range = pd.date_range(start='2020-03-14', end=yesterday)
 augment_time_series_from_daily_snapshots_fname_pattern = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/{}.csv'
+# disable merge from daily files, because it seems that the data update pipeline is fixed again.
+augment_time_series_from_daily_snapshots_date_range = []
 
 def augment_time_series_from_daily_snapshots(date_list):
     d = date_list[0]
@@ -37,7 +39,12 @@ def augment_time_series_from_daily_snapshots(date_list):
     ldf_death_base = time_series_19_covid_death.copy()
     ldf_death_base.drop(columns=columns_to_drop, inplace=True)
 
+    ldf_confirmed_base.fillna(-1, inplace=True)
+    ldf_recovered_base.fillna(-1, inplace=True)
+    ldf_death_base.fillna(-1, inplace=True)
+
     for d in date_list:
+        # print(d)
         ldf = pd.read_csv(augment_time_series_from_daily_snapshots_fname_pattern.format(d.date().strftime('%m-%d-%Y')))
         # '3/14/20'
         date_column_year = d.date().strftime('%y')
@@ -45,18 +52,21 @@ def augment_time_series_from_daily_snapshots(date_list):
 
         ldf_confirmed = ldf[['Province/State', 'Country/Region', 'Confirmed']].copy()
         ldf_confirmed = ldf_confirmed.rename(columns={'Confirmed': date_column})
+        ldf_confirmed.fillna(-1, inplace=True)
         ldf_confirmed_base = pd.merge(ldf_confirmed_base, ldf_confirmed, how='left', on=['Province/State', 'Country/Region'])
         ldf_confirmed_base.fillna(-1, inplace=True)
         ldf_confirmed_base[date_column] = ldf_confirmed_base[date_column].astype(np.int)
 
         ldf_recovered = ldf[['Province/State', 'Country/Region', 'Recovered']].copy()
         ldf_recovered = ldf_recovered.rename(columns={'Recovered': date_column})
+        ldf_recovered.fillna(-1, inplace=True)
         ldf_recovered_base = pd.merge(ldf_recovered_base, ldf_recovered, how='left', on=['Province/State', 'Country/Region'])
         ldf_recovered_base.fillna(-1, inplace=True)
         ldf_recovered_base[date_column] = ldf_recovered_base[date_column].astype(np.int)
 
         ldf_death = ldf[['Province/State', 'Country/Region', 'Deaths']].copy()
         ldf_death = ldf_death.rename(columns={'Deaths': date_column})
+        ldf_death.fillna(-1, inplace=True)
         ldf_death_base = pd.merge(ldf_death_base, ldf_death, how='left', on=['Province/State', 'Country/Region'])
         ldf_death_base.fillna(-1, inplace=True)
         ldf_death_base[date_column] = ldf_death_base[date_column].astype(np.int)
@@ -82,6 +92,10 @@ def get_cases_by_selector(selector, region='Germany'):
         ldf_confirmed, ldf_recovered, ldf_death = augment_time_series_from_daily_snapshots(augment_time_series_from_daily_snapshots_date_range)
     else:
         ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
+
+    if region == 'US':
+        selector = pd.Series([True])
+        ldf_confirmed, ldf_recovered, ldf_death = get_us_data_for_time_series(time_series_19_covid_confirmed), get_us_data_for_time_series(time_series_19_covid_recovered), get_us_data_for_time_series(time_series_19_covid_death)
 
     ldf_confirmed = ldf_confirmed[columns][selector]
     ldf_recovered = ldf_recovered[columns][selector]
@@ -193,6 +207,7 @@ def get_country_overview():
     ldf_death.columns = [death_column_name]
 
     ldf = pd.concat([ldf_confirmed, ldf_recovered, ldf_death], axis=1, sort=True)
+
     for idx, row in ldf.iterrows():
         if idx in override_xlsx.sheet_names:
             ldf_overrid = get_cases_by_region_override(region=idx)
@@ -310,7 +325,11 @@ def distribute_across_cases_gamma(in_df, dt, new_death, timeline_days=4 * 7):
     distribution = stats.gamma(gamma_k, loc=gamma_loc, scale=gamme_theta).pdf(ds_age)
     distribution = distribution / distribution.sum()
 
-    death_indices = np.random.choice(len(ldf), new_death, replace=False, p=distribution)
+    try:
+        death_indices = np.random.choice(len(ldf), new_death, replace=False, p=distribution)
+    except:
+        print(dt, len(ldf), new_death, distribution)
+        raise
     death_indices = ldf.index[death_indices]
 
     ldf = in_df[in_df.start_date >= three_weeks_ago]
@@ -395,3 +414,77 @@ class MortalityAnalysis():
         lower = np.round(float(1 - self.kmf.confidence_interval_.iloc[-1, 1]) * 100, 2)
         upper = np.round(float(1 - self.kmf.confidence_interval_.iloc[-1, 0]) * 100, 2)
         return (mean, lower, upper)
+
+US_states1 = [
+    'District of Columbia',
+    'Guam',
+    'Puerto Rico',
+]
+
+US_states0 = [
+    'Alabama',
+    'Alaska',
+    'Arizona',
+    'Arkansas',
+    'California',
+    'Colorado',
+    'Connecticut',
+    'Delaware',
+    'Florida',
+    'Georgia',
+    'Hawaii',
+    'Idaho',
+    'Illinois'
+    'Indiana',
+    'Iowa',
+    'Kansas',
+    'Kentucky',
+    'Louisiana',
+    'Maine',
+    'Maryland',
+    'Massachusetts',
+    'Michigan',
+    'Minnesota',
+    'Mississippi',
+    'Missouri',
+    'Montana',
+    'Nebraska',
+    'Nevada',
+    'New Hampshire',
+    'New Jersey',
+    'New Mexico',
+    'New York',
+    'North Carolina',
+    'North Dakota',
+    'Ohio',
+    'Oklahoma',
+    'Oregon',
+    'Pennsylvania',
+    'Rhode Island',
+    'South Carolina',
+    'South Dakota',
+    'Tennessee',
+    'Texas',
+    'Utah',
+    'Vermont',
+    'Virginia',
+    'Washington',
+    'West Virginia',
+    'Wisconsin',
+    'Wyoming',
+]
+
+US_states = US_states0 + US_states1
+
+def get_us_data_for_time_series(input_df):
+    ldf1 = input_df[(input_df['Country/Region'] == 'US') & input_df['Province/State'].str.contains(r'^.*, .*$')]
+    ldf1 = ldf1.loc[:,:'3/9/20']
+    ldf2 = input_df[(input_df['Country/Region'] == 'US') & input_df['Province/State'].isin(US_states)]
+    ldf2 = ldf2.loc[:,'3/10/20':]
+
+    lds = pd.concat([ldf1.sum(), ldf2.sum()])
+
+    ldf = pd.DataFrame(columns=(['Country/Region'] + list(columns)))
+    lds = (['US'] + list(lds[columns].values))
+    ldf.loc[0] = lds
+    return ldf
