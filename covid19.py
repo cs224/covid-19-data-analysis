@@ -243,7 +243,8 @@ def prepend_fill(in_df, abs_column_name, delta_column_name, first_count, origina
 def prepend(in_df, first_date=None, init_add=0, mult=1.0):
     if first_date is None:
         first_date = in_df.index[0]
-    in_df = in_df.loc[first_date:].copy()
+    # in_df = in_df.loc[first_date:].copy()
+    in_df = in_df.loc[first_date:].astype(np.int)
 
     in_df.loc[:, 'confirmed'] = (in_df['confirmed'] + init_add) * mult
     in_df['confirmed'] = in_df['confirmed'].astype(np.int)
@@ -393,13 +394,13 @@ class MortalityAnalysis():
         kmf_.fit(self.df_lifelines_individual.day_count, self.df_lifelines_individual.observed_death, label='kmf_')
         self.kmf = kmf_
 
-        wbf_ = lifelines.WeibullFitter()
-        wbf_.fit(self.df_lifelines_individual.day_count, self.df_lifelines_individual.observed_death, label='wbf_')
-        self.wbf = wbf_
-
-        exf_ = lifelines.ExponentialFitter()
-        exf_.fit(self.df_lifelines_individual.day_count, self.df_lifelines_individual.observed_death, label='exf_')
-        self.exf = exf_
+        # wbf_ = lifelines.WeibullFitter()
+        # wbf_.fit(self.df_lifelines_individual.day_count, self.df_lifelines_individual.observed_death, label='wbf_')
+        # self.wbf = wbf_
+        #
+        # exf_ = lifelines.ExponentialFitter()
+        # exf_.fit(self.df_lifelines_individual.day_count, self.df_lifelines_individual.observed_death, label='exf_')
+        # self.exf = exf_
 
     def plot(self):
         sns.set_style("whitegrid")
