@@ -365,6 +365,7 @@ def generate_life_lines(in_df, random_seed=None):
         rdf.reset_index(drop=True, inplace=True)
 
     rdf['day_count'] = (rdf.end_date - rdf.start_date).dt.days
+    rdf['observed_death'] = rdf['observed_death'].astype(np.bool)
 
     return rdf
 
