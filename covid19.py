@@ -126,7 +126,7 @@ def get_cases_by_selector(selector, region='Germany'):
     lv = ldf['death'].iloc[1:].values - ldf['death'].iloc[:-1].values
     ldf['new_death'] = np.concatenate([np.array([0]), lv])
 
-    return ldf
+    return ldf.astype(np.int)
 
 def get_cases_by_region(region='Germany'):
     r = region
@@ -213,6 +213,8 @@ def get_country_overview():
         if idx in override_xlsx.sheet_names:
             ldf_overrid = get_cases_by_region_override(region=idx)
             ldf.loc[idx] = ldf_overrid.iloc[-1]
+
+    ldf = ldf.astype(np.int)
 
     ldf['death_rate'] = ldf[death_column_name] / ldf[confirmed_column_name] * 100.0
     ldf['death_rate_'] = ldf[death_column_name] / (ldf[recovered_column_name] + ldf[death_column_name] + 1.0) * 100.0
@@ -417,6 +419,17 @@ class MortalityAnalysis():
         lower = np.round(float(1 - self.kmf.confidence_interval_.iloc[-1, 1]) * 100, 2)
         upper = np.round(float(1 - self.kmf.confidence_interval_.iloc[-1, 0]) * 100, 2)
         return (mean, lower, upper)
+
+    def project_death_and_hospitalization(self):
+        death_rate     = self.death_rate()[0] / 100.0
+        expected_death = self.prepend_df['confirmed'].iloc[-1] * death_rate
+        today_death    = self.df['death'].iloc[-1]
+        delta_death    = expected_death - today_death
+        delta_days     = 14
+        delta_death_across_days = delta_death / delta_days
+        proportion_of_ventilator_patient_dies = 0.4
+        required_ventilator_capacity = delta_death / proportion_of_ventilator_patient_dies
+        return pd.DataFrame([[expected_death, today_death, delta_death, delta_death_across_days, delta_days, required_ventilator_capacity]], columns=['expected_death', 'today_death', 'delta_death', 'delta_death_across_days', 'delta_days', 'required_ventilator_capacity']).round(0)
 
 US_states1 = [
     'District of Columbia',
