@@ -13,11 +13,14 @@ from dateutil import relativedelta
 
 from collections import OrderedDict
 
-fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Confirmed.csv'
+# fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Confirmed.csv'
+fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv'
 time_series_19_covid_confirmed = pd.read_csv(fname)
+# deprecated
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Recovered.csv'
 time_series_19_covid_recovered = pd.read_csv(fname)
-fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Deaths.csv'
+# fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Deaths.csv'
+fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv'
 time_series_19_covid_death = pd.read_csv(fname)
 
 yesterday = datetime.date.today() - datetime.timedelta(days=1)
@@ -25,6 +28,16 @@ augment_time_series_from_daily_snapshots_date_range = pd.date_range(start='2020-
 augment_time_series_from_daily_snapshots_fname_pattern = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/{}.csv'
 # disable merge from daily files, because it seems that the data update pipeline is fixed again.
 augment_time_series_from_daily_snapshots_date_range = []
+
+def fill_recovered_ds(ldf_confirmed_base, ldf_recovered_base):
+    l1 = len(ldf_confirmed_base.columns)
+    l2 = len(ldf_recovered_base.columns)
+    fill_up_columns = list(ldf_confirmed_base.columns)[l2:]
+    for c in fill_up_columns:
+        ldf_recovered_base[c] = -1
+
+    return ldf_recovered_base
+
 
 def augment_time_series_from_daily_snapshots(date_list):
     d = date_list[0]
@@ -71,6 +84,8 @@ def augment_time_series_from_daily_snapshots(date_list):
         ldf_death_base.fillna(-1, inplace=True)
         ldf_death_base[date_column] = ldf_death_base[date_column].astype(np.int)
 
+    ldf_recovered_base = fill_recovered_ds(ldf_confirmed_base, ldf_recovered_base)
+
     return ldf_confirmed_base, ldf_recovered_base, ldf_death_base
 
 columns = time_series_19_covid_confirmed.columns[4:]
@@ -93,22 +108,25 @@ def get_cases_by_selector(selector, region='Germany'):
     else:
         ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
 
-    if region == 'US':
-        selector = pd.Series([True])
-        ldf_confirmed, ldf_recovered, ldf_death = get_us_data_for_time_series(time_series_19_covid_confirmed), get_us_data_for_time_series(time_series_19_covid_recovered), get_us_data_for_time_series(time_series_19_covid_death)
+    ldf_recovered = fill_recovered_ds(ldf_confirmed, ldf_recovered)
+
+    # if region == 'US':
+    #     selector = pd.Series([True])
+    #     ldf_confirmed, ldf_recovered, ldf_death = get_us_data_for_time_series(time_series_19_covid_confirmed), get_us_data_for_time_series(time_series_19_covid_recovered), get_us_data_for_time_series(time_series_19_covid_death)
 
     ldf_confirmed = ldf_confirmed[columns][selector]
-    ldf_recovered = ldf_recovered[columns][selector]
+    # ldf_recovered = ldf_recovered[columns][selector]
     ldf_death     = ldf_death[columns][selector]
 
     if (len(ldf_confirmed) > 1):
         ldf_confirmed = pd.DataFrame(ldf_confirmed.sum(axis=0), columns=['sum']).T
-        ldf_recovered = pd.DataFrame(ldf_recovered.sum(axis=0), columns=['sum']).T
+        # ldf_recovered = pd.DataFrame(ldf_recovered.sum(axis=0), columns=['sum']).T
         ldf_death = pd.DataFrame(ldf_death.sum(axis=0), columns=['sum']).T
 
     ldf = pd.DataFrame(index=dcolumns)
     ldf['confirmed'] = ldf_confirmed.T.values
-    ldf['recovered'] = ldf_recovered.T.values
+    # ldf['recovered'] = ldf_recovered.T.values
+    ldf['recovered'] = 0
     ldf['death'] = ldf_death.T.values
 
     override_df = get_cases_by_region_override(region=region)
@@ -194,7 +212,8 @@ def get_country_overview():
         ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
 
     ldf_confirmed = ldf_confirmed[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
-    ldf_recovered = ldf_recovered[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+    # ldf_recovered = ldf_recovered[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+    ldf_recovered = ldf_confirmed.copy()
     ldf_death     = ldf_death[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
 
     # confirmed_column_name = 'confirmed_' + str(pd.to_datetime(columns[-1]).date())
@@ -203,6 +222,7 @@ def get_country_overview():
     # recovered_column_name = 'recovered_' + str(pd.to_datetime(columns[-1]).date())
     recovered_column_name = 'recovered'
     ldf_recovered.columns = [recovered_column_name]
+    ldf_recovered['recovered'] = -1
     # death_column_name     = 'death_' + str(pd.to_datetime(columns[-1]).date())
     death_column_name = 'death'
     ldf_death.columns = [death_column_name]
@@ -492,7 +512,7 @@ US_states0 = [
 
 US_states = US_states0 + US_states1
 
-def get_us_data_for_time_series(input_df):
+def get_us_data_for_time_series_(input_df):
     ldf1 = input_df[(input_df['Country/Region'] == 'US') & input_df['Province/State'].str.contains(r'^.*, .*$')]
     ldf1 = ldf1.loc[:,:'3/9/20']
     ldf2 = input_df[(input_df['Country/Region'] == 'US') & input_df['Province/State'].isin(US_states)]
