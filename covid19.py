@@ -17,7 +17,9 @@ from collections import OrderedDict
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv'
 time_series_19_covid_confirmed = pd.read_csv(fname)
 # deprecated
-fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Recovered.csv'
+# fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Recovered.csv'
+# fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/cd66d80f60dc1a8ecb6e0f362cc206c5c43b7144/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Recovered.csv'
+fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_recovered_global.csv'
 time_series_19_covid_recovered = pd.read_csv(fname)
 # fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Deaths.csv'
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv'
