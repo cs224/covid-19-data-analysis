@@ -110,25 +110,34 @@ def get_cases_by_selector(selector, region='Germany'):
     else:
         ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
 
-    ldf_recovered = fill_recovered_ds(ldf_confirmed, ldf_recovered)
+    # ldf_recovered = fill_recovered_ds(ldf_confirmed, ldf_recovered)
 
     # if region == 'US':
     #     selector = pd.Series([True])
     #     ldf_confirmed, ldf_recovered, ldf_death = get_us_data_for_time_series(time_series_19_covid_confirmed), get_us_data_for_time_series(time_series_19_covid_recovered), get_us_data_for_time_series(time_series_19_covid_death)
 
+
+    # return ldf_confirmed, ldf_recovered, ldf_death, columns, selector
+    ldf_recovered = pd.merge(ldf_confirmed[['Country/Region', 'Province/State']], ldf_recovered, how='left', on=['Country/Region', 'Province/State']).fillna(0.0)
+
     ldf_confirmed = ldf_confirmed[columns][selector]
-    # ldf_recovered = ldf_recovered[columns][selector]
+
+    ldf_recovered = (ldf_recovered[columns]).astype(np.int)
+    ldf_recovered = ldf_recovered[selector]
+
     ldf_death     = ldf_death[columns][selector]
 
     if (len(ldf_confirmed) > 1):
         ldf_confirmed = pd.DataFrame(ldf_confirmed.sum(axis=0), columns=['sum']).T
-        # ldf_recovered = pd.DataFrame(ldf_recovered.sum(axis=0), columns=['sum']).T
+        ldf_recovered = pd.DataFrame(ldf_recovered.sum(axis=0), columns=['sum']).T
         ldf_death = pd.DataFrame(ldf_death.sum(axis=0), columns=['sum']).T
+
+    # return ldf_confirmed, ldf_recovered, ldf_death
 
     ldf = pd.DataFrame(index=dcolumns)
     ldf['confirmed'] = ldf_confirmed.T.values
-    # ldf['recovered'] = ldf_recovered.T.values
-    ldf['recovered'] = 0
+    ldf['recovered'] = ldf_recovered.T.values
+    # ldf['recovered'] = 0
     ldf['death'] = ldf_death.T.values
 
     override_df = get_cases_by_region_override(region=region)
@@ -213,10 +222,14 @@ def get_country_overview():
     else:
         ldf_confirmed, ldf_recovered, ldf_death = time_series_19_covid_confirmed.copy(), time_series_19_covid_recovered.copy(), time_series_19_covid_death.copy()
 
+    ldf_recovered = pd.merge(ldf_confirmed[['Country/Region', 'Province/State']], ldf_recovered, how='left', on=['Country/Region', 'Province/State']).fillna(0.0)
+
     ldf_confirmed = ldf_confirmed[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
-    # ldf_recovered = ldf_recovered[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
-    ldf_recovered = ldf_confirmed.copy()
+    ldf_recovered = ldf_recovered[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+    # ldf_recovered = ldf_confirmed.copy()
     ldf_death     = ldf_death[['Country/Region', columns[-1]]].groupby(['Country/Region']).sum()
+
+    # return ldf_confirmed, ldf_recovered, ldf_death
 
     # confirmed_column_name = 'confirmed_' + str(pd.to_datetime(columns[-1]).date())
     confirmed_column_name = 'confirmed'
@@ -224,7 +237,7 @@ def get_country_overview():
     # recovered_column_name = 'recovered_' + str(pd.to_datetime(columns[-1]).date())
     recovered_column_name = 'recovered'
     ldf_recovered.columns = [recovered_column_name]
-    ldf_recovered['recovered'] = -1
+    # ldf_recovered['recovered'] = -1
     # death_column_name     = 'death_' + str(pd.to_datetime(columns[-1]).date())
     death_column_name = 'death'
     ldf_death.columns = [death_column_name]
@@ -234,7 +247,11 @@ def get_country_overview():
     for idx, row in ldf.iterrows():
         if idx in override_xlsx.sheet_names:
             ldf_overrid = get_cases_by_region_override(region=idx)
-            ldf.loc[idx] = ldf_overrid.iloc[-1]
+            csse_covid_19_data_date = pd.to_datetime(columns[-1]).date()
+            covid_manual_excel_date = ldf_overrid.iloc[-1].name - datetime.timedelta(days=1)
+            # print(idx, csse_covid_19_data_date, covid_manual_excel_date, csse_covid_19_data_date == covid_manual_excel_date)
+            if csse_covid_19_data_date == covid_manual_excel_date:
+                ldf.loc[idx] = ldf_overrid.iloc[-1]
 
     ldf = ldf.astype(np.int)
 
