@@ -21,3 +21,7 @@ To be sure you get the latest versions you can either look at the notebooks on *
 * [covid-19-survival.ipynb](https://github.com/cs224/covid-19-data-analysis/blob/master/covid-19-survival.ipynb)
 
 Or you checkout the repository and run the notebooks locally on your machine.
+
+# Relative risk based on age and sex derived from data from Germany (2020-03-31)
+
+* [covid19-germany-death-rate-by-sex.ipynb](https://nbviewer.jupyter.org/github/cs224/covid-19-data-analysis/blob/master/2020-03-31-covid19-germany-death-rate-by-sex.ipynb?flush_cache=true)
