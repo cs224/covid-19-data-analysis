@@ -580,10 +580,13 @@ def fitCurve(country_df):
         return [], [], sys.float_info.max, ""
 
 
-def prepare_country_prediction(country_name, first_date, init_add=0.0):
-    mortality_analysis = MortalityAnalysis(country_name, first_date=first_date, init_add=init_add)
+def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=None, new_confirmed_threshold=100.0):
+    if in_df is None:
+        mortality_analysis = MortalityAnalysis(country_name, first_date=first_date, init_add=init_add)
+        ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date].copy()
+    else:
+        ldf = in_df.copy()
 
-    ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date].copy()
     country_df = ldf.confirmed.reset_index(drop=True)
     # .reset_index(drop=True).reset_index(name='x')
     country_df.index.name = 'x'
@@ -606,6 +609,6 @@ def prepare_country_prediction(country_name, first_date, init_add=0.0):
 
     vs = np.concatenate([np.array([0.0]), country_df.sigmoid_fit.values[1:] - country_df.sigmoid_fit.values[:-1]])
     country_df['sigmoid_fit_diff'] = vs
-    max_above_100_date = country_df[country_df.sigmoid_fit_diff > 100.0].index.max()
+    max_above_100_date = country_df[country_df.sigmoid_fit_diff > new_confirmed_threshold * 1.0].index.max()
 
     return country_df[country_df.index <= max_above_100_date], popt, pcov, sqdiff, growthRate
