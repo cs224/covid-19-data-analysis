@@ -543,3 +543,69 @@ def get_us_data_for_time_series_(input_df):
     lds = (['US'] + list(lds[columns].values))
     ldf.loc[0] = lds
     return ldf
+
+
+def fitExp(t, a, b):
+    return a * np.exp(b * t)
+
+
+def fitSig(t, a, b, c):
+    return a / (1.0 + np.exp(-b * t - c))
+
+
+def fitCurve(country_df):
+    try:
+        daynr = country_df.x
+        values = country_df.confirmed
+        fitFunc = fitSig
+        p0 = [values[-1], 0.1, -10]
+        # fit curve
+        popt, pcov = scipy.optimize.curve_fit(fitFunc, daynr, values, p0)
+
+        # estimate error
+        proj = fitFunc(daynr, *popt)
+        sqdiff = np.sum((values - proj) ** 2)
+
+        # generate label for chart
+        # equation=eqFormatter(popt)
+        if (len(proj) >= 2 and proj[-2] != 0):
+            growthRate = proj[-1] / proj[-2] - 1
+        else:
+            growthRate = 0
+        # fitLabel="%s\n%.1f%% daily growth" % (equation, 100*growthRate)
+        return popt, pcov, sqdiff, growthRate, proj
+
+    except (RuntimeError, TypeError) as e:
+        raise e
+        return [], [], sys.float_info.max, ""
+
+
+def prepare_country_prediction(country_name, first_date, init_add=0.0):
+    mortality_analysis = MortalityAnalysis(country_name, first_date=first_date, init_add=init_add)
+
+    ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date].copy()
+    country_df = ldf.confirmed.reset_index(drop=True)
+    # .reset_index(drop=True).reset_index(name='x')
+    country_df.index.name = 'x'
+    country_df = country_df.reset_index().astype(np.float)
+    country_df.index = ldf.index
+    country_df['x'] = country_df['x'] + 1.0
+
+    popt, pcov, sqdiff, growthRate, proj = fitCurve(country_df)
+
+    last_x = int(country_df.x.iloc[-1])
+    last_day = country_df.index[-1]
+    for i in range(1, 40):
+        x = last_x + i
+        d = last_day + datetime.timedelta(days=i)
+        country_df.loc[d] = [x, np.nan]
+
+    fitFunc = fitSig
+    proj = fitFunc(country_df.x, *popt)
+    country_df['sigmoid_fit'] = proj
+
+    vs = np.concatenate([np.array([0.0]), country_df.sigmoid_fit.values[1:] - country_df.sigmoid_fit.values[:-1]])
+    country_df['sigmoid_fit_diff'] = vs
+    max_above_100_date = country_df[country_df.sigmoid_fit_diff > 100.0].index.max()
+
+    return country_df[country_df.index <= max_above_100_date], popt, pcov, sqdiff, growthRate
