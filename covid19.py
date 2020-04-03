@@ -594,7 +594,8 @@ def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=Non
     country_df.index = ldf.index
     country_df['x'] = country_df['x'] + 1.0
 
-    popt, pcov, sqdiff, growthRate, proj = fitCurve(country_df)
+    fit_df = country_df[country_df.index >= first_date].copy()
+    popt, pcov, sqdiff, growthRate, proj = fitCurve(fit_df)
 
     last_x = int(country_df.x.iloc[-1])
     last_day = country_df.index[-1]
