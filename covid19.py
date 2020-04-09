@@ -294,7 +294,7 @@ def prepend(in_df, first_date=None, init_add=0, mult=1.0):
     in_df.loc[:, 'new_confirmed'].iloc[1:] = in_df['confirmed'].iloc[1:].values - in_df['confirmed'].iloc[:-1].values
     # in_df['new_confirmed'] = in_df['new_confirmed'].astype(np.int)
 
-    prepend_period_in_days = 11
+    prepend_period_in_days = 20
     date_range_1_start = first_date + datetime.timedelta(days=-prepend_period_in_days)
     date_range_1_end = first_date + datetime.timedelta(days=-1)
     # print(date_range_1_start, date_range_1_end)
@@ -354,8 +354,11 @@ gamma_loc   = 2.0
 gamma_k     = 3.0
 gamme_theta = 3.0
 
+# gamma_loc   = 16.454713143887975
+# gamma_k     = 5.103143892368536
+# gamme_theta = 0.26394210847694694
 
-def distribute_across_cases_gamma(in_df, dt, new_death, timeline_days=4 * 7):
+def distribute_across_cases_gamma(in_df, dt, new_death, timeline_days=6 * 7, gamma_distribution_parameters=None):
     three_weeks_ago = dt + datetime.timedelta(days=-timeline_days)
     ldf = in_df[in_df.start_date >= three_weeks_ago]
     already_deaths = ldf.observed_death.sum()
@@ -365,14 +368,25 @@ def distribute_across_cases_gamma(in_df, dt, new_death, timeline_days=4 * 7):
         raise Exception('available_death_slots < new_death')
 
     ds_age = (dt - ldf.start_date).dt.days
-    distribution = stats.gamma(gamma_k, loc=gamma_loc, scale=gamme_theta).pdf(ds_age)
-    distribution = distribution / distribution.sum()
+    k, loc, theta = gamma_k, gamma_loc, gamme_theta
+    if gamma_distribution_parameters is not None:
+        k, loc, theta = gamma_distribution_parameters['k'], gamma_distribution_parameters['loc'], gamma_distribution_parameters['theta']
+
+    distribution = stats.gamma(k, loc=loc, scale=theta).pdf(ds_age)
+    s = distribution.sum()
+    if s > 0:
+        distribution = distribution / s
+    else:
+        distribution = np.full_like(distribution, 1.0/len(distribution))
 
     try:
         death_indices = np.random.choice(len(ldf), new_death, replace=False, p=distribution)
     except:
-        print(dt, len(ldf), new_death, distribution)
-        raise
+        # print(dt, len(ldf), new_death, distribution)
+        print('distribute_across_cases_gamma: using uniform distribution for date: {}'.format(dt))
+        distribution = np.full_like(distribution, 1.0/len(distribution))
+        death_indices = np.random.choice(len(ldf), new_death, replace=False, p=distribution)
+        # raise
     death_indices = ldf.index[death_indices]
 
     ldf = in_df[in_df.start_date >= three_weeks_ago]
@@ -382,7 +396,7 @@ def distribute_across_cases_gamma(in_df, dt, new_death, timeline_days=4 * 7):
     return death_indices
 
 
-def generate_life_lines(in_df, random_seed=None):
+def generate_life_lines(in_df, random_seed=None, gamma_distribution_parameters=None):
     if random_seed is None:
         random_seed = 42  # np.random.RandomState(42)
     np.random.seed(random_seed)
@@ -395,7 +409,7 @@ def generate_life_lines(in_df, random_seed=None):
         new_death = in_df['new_death'].iloc[i]
         if new_death > 0:
             # death_indices = distribute_across_cases_linear(rdf, dt, new_death, timeline_days=3*7)
-            death_indices = distribute_across_cases_gamma(rdf, dt, new_death, timeline_days=3 * 7)
+            death_indices = distribute_across_cases_gamma(rdf, dt, new_death, gamma_distribution_parameters=gamma_distribution_parameters)
             rdf.loc[death_indices, 'observed_death'] = True
             rdf.loc[death_indices, 'end_date'] = dt
 
@@ -413,14 +427,15 @@ def generate_life_lines(in_df, random_seed=None):
 
 
 class MortalityAnalysis():
-    def __init__(self, region, first_date=None, init_add=0, mult=1.0):
+    def __init__(self, region, first_date=None, init_add=0, mult=1.0, gamma_distribution_parameters=None):
         self.region = region
         self.first_date = first_date
         self.init_add = init_add
         self.mult = mult
+        self.gamma_distribution_parameters = gamma_distribution_parameters
         self.df = get_cases_by_region(region=region)
         self.prepend_df = prepend(self.df, first_date=first_date, init_add=init_add, mult=mult)
-        self.df_lifelines_individual = generate_life_lines(self.prepend_df)
+        self.df_lifelines_individual = generate_life_lines(self.prepend_df, gamma_distribution_parameters=gamma_distribution_parameters)
 
     #         observed_death_by_day = self.df_lifelines_individual[['end_date', 'observed_death']].groupby(['end_date']).sum()
     #         observed_death_by_day['observed_death'] = observed_death_by_day['observed_death'].astype(np.int)
