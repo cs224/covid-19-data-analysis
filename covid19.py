@@ -12,6 +12,7 @@ import datetime, time, math
 from dateutil import relativedelta
 
 from collections import OrderedDict
+import sys
 
 # fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Confirmed.csv'
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv'
@@ -357,6 +358,30 @@ gamme_theta = 3.0
 # gamma_loc   = 16.454713143887975
 # gamma_k     = 5.103143892368536
 # gamme_theta = 0.26394210847694694
+# gamma_mean
+
+duration_onset_death_mean = 17.8
+duration_onset_death_02_5_pc = 16.9
+duration_onset_death_97_5_pc = 19.2
+
+def fit_measure(in_array):
+    loc, k, theta = in_array[0], in_array[1], in_array[2]
+    dist = stats.gamma(k, loc=loc, scale=theta)
+    mean = float(dist.stats('m'))
+    q_02_5 = dist.ppf(0.025)
+    q_97_5 = dist.ppf(0.975)
+    r = (duration_onset_death_mean - mean)**2 + (duration_onset_death_02_5_pc - q_02_5)**2 + (duration_onset_death_97_5_pc - q_97_5)**2
+    return r
+
+r = scipy.optimize.minimize(fit_measure, np.array([gamma_loc, gamma_k, gamme_theta]), method='Nelder-Mead', tol=0.1)
+gamma_loc   = r.x[0]
+gamma_k     = r.x[1]
+gamme_theta = r.x[2]
+gamma_dist = stats.gamma(gamma_k, loc=gamma_loc, scale=gamme_theta)
+gamma_mean = float(gamma_dist.stats('m'))
+gamma_q_02_5 = gamma_dist.ppf(0.025)
+gamma_q_97_5 = gamma_dist.ppf(0.975)
+
 
 def distribute_across_cases_gamma(in_df, dt, new_death, timeline_days=6 * 7, gamma_distribution_parameters=None):
     three_weeks_ago = dt + datetime.timedelta(days=-timeline_days)
@@ -435,7 +460,15 @@ class MortalityAnalysis():
         self.gamma_distribution_parameters = gamma_distribution_parameters
         self.df = get_cases_by_region(region=region)
         self.prepend_df = prepend(self.df, first_date=first_date, init_add=init_add, mult=mult)
-        self.df_lifelines_individual = generate_life_lines(self.prepend_df, gamma_distribution_parameters=gamma_distribution_parameters)
+
+        self.calculate_delay_between_new_cases_and_death()
+        loc = max(self.delay_between_new_cases_and_death_timeshift - (gamma_mean - gamma_loc), 0.0)
+        if gamma_distribution_parameters is None:
+            self.gamma_distribution_parameters = dict(loc=loc, k=gamma_k, theta=gamme_theta)
+        else:
+            self.gamma_distribution_parameters =gamma_distribution_parameters
+
+        self.df_lifelines_individual = generate_life_lines(self.prepend_df, gamma_distribution_parameters=self.gamma_distribution_parameters)
 
     #         observed_death_by_day = self.df_lifelines_individual[['end_date', 'observed_death']].groupby(['end_date']).sum()
     #         observed_death_by_day['observed_death'] = observed_death_by_day['observed_death'].astype(np.int)
@@ -444,6 +477,40 @@ class MortalityAnalysis():
     #         ldf = self.prepend_df.new_death - self.observed_death_by_day.observed_death
     #         if len(ldf[ldf > 0.0]) > 0:
     #             raise Exception('MortalityAnalysis: the death in df_lifelines_individual do not match the ones in prepend_df')
+
+    def calculate_delay_between_new_cases_and_death(self):
+        ldf = self.prepend_df.copy()
+        first_date = self.first_date
+        if first_date is None:
+            first_date = self.prepend_df.index[0]
+        ldf = self.prepend_df[self.prepend_df.index >= first_date].copy()
+
+        country_df = ldf[['confirmed', 'death']].reset_index(drop=True)
+        # .reset_index(drop=True).reset_index(name='x')
+        country_df.index.name = 'x'
+        country_df = country_df.reset_index().astype(np.float)
+        country_df.index = ldf.index
+        country_df['x'] = country_df['x'] + 1.0
+
+        fit_df = country_df[country_df.index >= first_date].copy()
+        popt_confirmed, _, _, _, _ = fitCurve(fit_df, fit_column='confirmed')
+        popt_death, _, _, _, _ = fitCurve(fit_df, fit_column='death')
+
+        x = country_df['x'].values
+        extDayCount = 7
+        t = np.linspace(x[0], x[-1] + extDayCount, 5 * (len(x) + extDayCount))
+        death_predicted = fitSig(t, *popt_death)
+
+        def fitdf(t, a, b):
+            return a * fitSig(t - b, *(popt_confirmed))
+
+        popt, pcov = scipy.optimize.curve_fit(fitdf, t, death_predicted, [0.05, 10])
+        if popt[1] < 0:
+            raise Exception('deaths must come after cases, ignore nonsensical fits')
+
+        self.delay_between_new_cases_and_death_popt = popt
+        self.delay_between_new_cases_and_death_cfr_estimate = popt[0]
+        self.delay_between_new_cases_and_death_timeshift    = popt[1]
 
     def fit(self):
         kmf_ = lifelines.KaplanMeierFitter()
@@ -472,14 +539,15 @@ class MortalityAnalysis():
         mean = np.round(float(1 - self.kmf.survival_function_.iloc[-1].values) * 100, 2)
         lower = np.round(float(1 - self.kmf.confidence_interval_.iloc[-1, 1]) * 100, 2)
         upper = np.round(float(1 - self.kmf.confidence_interval_.iloc[-1, 0]) * 100, 2)
-        return (mean, lower, upper)
+        delay_between_new_cases_and_death_cfr_estimate = np.round(self.delay_between_new_cases_and_death_cfr_estimate * 100, 2)
+        return (mean, lower, upper, delay_between_new_cases_and_death_cfr_estimate, self.delay_between_new_cases_and_death_timeshift)
 
     def project_death_and_hospitalization(self):
         death_rate     = self.death_rate()[0] / 100.0
         expected_death = self.prepend_df['confirmed'].iloc[-1] * death_rate
         today_death    = self.df['death'].iloc[-1]
         delta_death    = expected_death - today_death
-        delta_days     = 14
+        delta_days     = self.delay_between_new_cases_and_death_timeshift
         delta_death_across_days = delta_death / delta_days
         proportion_of_ventilator_patient_dies = 0.4
         required_ventilator_capacity = delta_death / proportion_of_ventilator_patient_dies
@@ -567,11 +635,94 @@ def fitExp(t, a, b):
 def fitSig(t, a, b, c):
     return a / (1.0 + np.exp(-b * t - c))
 
+def fitSigExt(t, a, b, c, n):
+    return fitSig(t,a,b,c) + n*np.log(1+np.exp(b*t+c))
 
-def fitCurve(country_df):
+
+def find_best_fit(country_df, fit_column='confirmed'):
+
+    daynr = country_df.x
+    values = country_df[fit_column]
+
+    fitSets = [
+        (0, [10, 0.2], fitExp, 'exp'),
+        (1, [max(values) * 3 / 2, 0.2, -10], fitSig, 'sigmoid'),
+        (2, [max(values) * 3 / 2, 0.2, -10, 100], fitSigExt, 'sigmoid+linear')
+    ]
+
+    n = len(values)
+
+    bestSeor, bestIndex, bestPopt, bestPcov = sys.float_info.max, None, [], []
+    sndbestSeor, sndbestIndex, sndbestPopt, sndbestPcov = sys.float_info.max, None, [], []
+
+    for index, p0, fitFunc, _ in fitSets:
+        try:
+
+
+            # alpha=0.05
+            try:
+                # Standard error function first; gives best fit for last 2-3 weeks,
+                # although fits for the early days are poorer
+                popt, pcov = scipy.optimize.curve_fit(fitFunc, daynr, values, p0)
+            except (RuntimeError, OverflowError, TypeError) as e:
+                # Modified poisson error with x^4. Deal with outliers for the last few
+                # days, which cause the fitting to fail with the standard error function.
+                popt, pcov = scipy.optimize.curve_fit(fitFunc, daynr, values, p0, sigma=[math.pow(theY + 1.0, 1 / 4.0) for theY in values], absolute_sigma=True)
+
+            # Small constant relative error: alpha*x. Performs worse for last 20 days
+            # popt, pcov = curve_fit(f, x, yd, p0, sigma=[alpha*theY+1 for theY in yd], absolute_sigma=True)
+            # Possion error: sqrt(y), inherent for all rate counting applications. Performs worse for last 20 days
+            # popt, pcov = curve_fit(f, x, yd, p0, sigma=[math.sqrt(theY+1) for theY in yd], absolute_sigma=True)
+            # Combined constant relative and poisson. Performs worse for last 20 days
+            # popt, pcov = curve_fit(f, x, yd, p0, sigma=[math.sqrt(theY+alpha*alpha*theY*theY+1) for theY in yd], absolute_sigma=True)
+
+            # r2         = 1.0-(sum((yd-f(x,*(popt)))**2)/((n-1.0)*np.var(yd,ddof=1)))
+            # pseudo-R2 for nonlinear fits, from https://stackoverflow.com/a/14530853
+            # Better use standard error of the estimate for a non-linear fit. Lower values are better
+            seor = math.sqrt(sum((values - fitFunc(daynr, *(popt))) ** 2) / (n - len(popt)))
+
+            if abs(popt[1] > 2):  # PRIOR: we know the exponent is fairly small, use this to ignore absurd fits
+                continue
+            if len(popt) == 4 and (popt[3] > popt[0]):  # PRIOR: we know the plateau should be smaller than the peak, ignore absurd fits
+                continue
+
+            # make this the new best result, if it exceeds the previous one by a threshold
+            # added cache in case an intermediate result was somewhat better, but the new one isn't much better
+            gamma = 1.1
+            if seor * gamma < bestSeor and seor * gamma < sndbestSeor:
+                bestSeor, bestIndex, bestPopt, bestPcov = seor, index, popt, pcov
+                sndbestSeor = sys.float_info.max
+            elif seor * gamma < bestSeor:
+                if sndbestSeor < sys.float_info.max:
+                    bestSeor, bestIndex, bestPopt, bestPcov = sndbestSeor, sndbestIndex, sndbestPopt, sndbestPcov
+                sndbestSeor, sndbestIndex, sndbestPopt, sndbestPcov = seor, index, popt, pcov
+
+        except (RuntimeError, OverflowError, TypeError) as e:
+            continue
+
+    seor, popt, pcov = bestSeor, bestPopt, bestPcov
+    if bestIndex != None:
+        index, p0, fitFunc, label = fitSets[bestIndex]
+    else:
+        index, p0, fitFunc, label = 0, [], None, 'None'
+
+    # estimate error
+    proj = fitFunc(daynr, *popt)
+
+    # generate label for chart
+    # equation=eqFormatter(popt)
+    if (len(proj) >= 2 and proj[-2] != 0):
+        growthRate = proj[-1] / proj[-2] - 1
+    else:
+        growthRate = 0
+
+    return popt, pcov, seor, growthRate, proj, index, fitFunc, label
+
+
+def fitCurve(country_df, fit_column='confirmed'):
     try:
         daynr = country_df.x
-        values = country_df.confirmed
+        values = country_df[fit_column]
         fitFunc = fitSig
         p0 = [values[-1], 0.1, -10]
         # fit curve
@@ -595,14 +746,14 @@ def fitCurve(country_df):
         return [], [], sys.float_info.max, ""
 
 
-def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=None, new_confirmed_threshold=100.0):
+def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=None, new_confirmed_threshold=100.0, fit_column='confirmed'):
     if in_df is None:
         mortality_analysis = MortalityAnalysis(country_name, first_date=first_date, init_add=init_add)
         ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date].copy()
     else:
         ldf = in_df.copy()
 
-    country_df = ldf.confirmed.reset_index(drop=True)
+    country_df = ldf[fit_column].reset_index(drop=True)
     # .reset_index(drop=True).reset_index(name='x')
     country_df.index.name = 'x'
     country_df = country_df.reset_index().astype(np.float)
@@ -610,7 +761,7 @@ def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=Non
     country_df['x'] = country_df['x'] + 1.0
 
     fit_df = country_df[country_df.index >= first_date].copy()
-    popt, pcov, sqdiff, growthRate, proj = fitCurve(fit_df)
+    popt, pcov, sqdiff, growthRate, proj, idx, fitFunc, label = find_best_fit(fit_df, fit_column=fit_column)
 
     last_x = int(country_df.x.iloc[-1])
     last_day = country_df.index[-1]
@@ -619,12 +770,52 @@ def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=Non
         d = last_day + datetime.timedelta(days=i)
         country_df.loc[d] = [x, np.nan]
 
-    fitFunc = fitSig
+    # fitFunc = fitSig
     proj = fitFunc(country_df.x, *popt)
-    country_df['sigmoid_fit'] = proj
+    label_fit = label + '_fit'
+    country_df[label_fit] = proj
 
-    vs = np.concatenate([np.array([0.0]), country_df.sigmoid_fit.values[1:] - country_df.sigmoid_fit.values[:-1]])
-    country_df['sigmoid_fit_diff'] = vs
-    max_above_100_date = country_df[country_df.sigmoid_fit_diff > new_confirmed_threshold * 1.0].index.max()
+    vs = np.concatenate([np.array([0.0]), country_df[label_fit].values[1:] - country_df[label_fit].values[:-1]])
+    label_fit_diff = label + '_fit_diff'
+    country_df[label_fit_diff] = vs
+    max_above_100_date = country_df[country_df[label_fit_diff] > new_confirmed_threshold * 1.0].index.max()
+    max_above_100_date = max_above_100_date + datetime.timedelta(days=2)
 
-    return country_df[country_df.index <= max_above_100_date], popt, pcov, sqdiff, growthRate
+    return country_df[country_df.index <= max_above_100_date], popt, pcov, sqdiff, growthRate, idx, label
+
+
+def calculate_delay_between_new_cases_and_death(country_name, first_date, init_add=0.0, in_df=None):
+    if in_df is None:
+        mortality_analysis = MortalityAnalysis(country_name, first_date=first_date, init_add=init_add)
+        if first_date is None:
+            ldf = mortality_analysis.prepend_df.copy()
+            first_date = mortality_analysis.prepend_df.index[0]
+        else:
+            ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date].copy()
+    else:
+        ldf = in_df.copy()
+
+    country_df = ldf[['confirmed', 'death']].reset_index(drop=True)
+    # .reset_index(drop=True).reset_index(name='x')
+    country_df.index.name = 'x'
+    country_df = country_df.reset_index().astype(np.float)
+    country_df.index = ldf.index
+    country_df['x'] = country_df['x'] + 1.0
+
+    fit_df = country_df[country_df.index >= first_date].copy()
+    popt_confirmed, _, _, _, _ = fitCurve(fit_df, fit_column='confirmed')
+    popt_death    , _, _, _, _ = fitCurve(fit_df, fit_column='death')
+
+    x = country_df['x'].values
+    extDayCount = 7
+    t = np.linspace(x[0], x[-1] + extDayCount, 5 * (len(x) + extDayCount))
+    death_predicted = fitSig(t, *popt_death)
+
+    def fitdf(t, a, b):
+        return a * fitSig(t - b, *(popt_confirmed))
+
+    popt, pcov = scipy.optimize.curve_fit(fitdf, t, death_predicted, [0.05, 10])
+    if popt[1] < 0:
+        raise Exception('deaths must come after cases, ignore nonsensical fits')
+
+    return popt
