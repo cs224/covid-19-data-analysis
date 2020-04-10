@@ -468,6 +468,8 @@ class MortalityAnalysis():
         else:
             self.gamma_distribution_parameters =gamma_distribution_parameters
 
+        self.prepare_prediction()
+
         self.df_lifelines_individual = generate_life_lines(self.prepend_df, gamma_distribution_parameters=self.gamma_distribution_parameters)
 
     #         observed_death_by_day = self.df_lifelines_individual[['end_date', 'observed_death']].groupby(['end_date']).sum()
@@ -512,6 +514,47 @@ class MortalityAnalysis():
         self.delay_between_new_cases_and_death_cfr_estimate = popt[0]
         self.delay_between_new_cases_and_death_timeshift    = popt[1]
 
+    def prepare_prediction(self, fit_column='confirmed'):
+        ldf = self.prepend_df.copy()
+        first_date = self.first_date
+        if first_date is None:
+            first_date = self.prepend_df.index[0]
+
+        country_df = ldf[fit_column].reset_index(drop=True)
+        # .reset_index(drop=True).reset_index(name='x')
+        country_df.index.name = 'x'
+        country_df = country_df.reset_index().astype(np.float)
+        country_df.index = ldf.index
+        country_df['x'] = country_df['x'] + 1.0
+
+        fit_df = country_df[country_df.index >= first_date].copy()
+        popt, pcov, sqdiff, growthRate, proj, idx, fitFunc, label = find_best_fit(fit_df, fit_column=fit_column)
+        self.prediction_fit_fitFunc    = fitFunc
+        self.prediction_fit_popt       = popt
+        self.prediction_fit_growthRate = growthRate
+        self.prediction_fit_label      = label
+
+        last_x = int(country_df.x.iloc[-1])
+        last_day = country_df.index[-1]
+        for i in range(1, 40):
+            x = last_x + i
+            d = last_day + datetime.timedelta(days=i)
+            country_df.loc[d] = [x, np.nan]
+
+        # fitFunc = fitSig
+        proj = fitFunc(country_df.x, *popt)
+        label_fit = label + '_fit'
+        self.prediction_fit_label_fit = label_fit
+        country_df[label_fit] = proj
+
+
+        vs = np.concatenate([np.array([0.0]), country_df[label_fit].values[1:] - country_df[label_fit].values[:-1]])
+        label_fit_diff = label + '_fit_diff'
+        self.prediction_fit_label_fit_diff = label_fit_diff
+        country_df[label_fit_diff] = vs
+
+        self.prediction_fit_df = country_df
+
     def fit(self):
         kmf_ = lifelines.KaplanMeierFitter()
         kmf_.fit(self.df_lifelines_individual.day_count, self.df_lifelines_individual.observed_death, label='kmf_')
@@ -543,15 +586,41 @@ class MortalityAnalysis():
         return (mean, lower, upper, delay_between_new_cases_and_death_cfr_estimate, self.delay_between_new_cases_and_death_timeshift)
 
     def project_death_and_hospitalization(self):
-        death_rate     = self.death_rate()[0] / 100.0
+        death_rate     = float(self.death_rate()[0] / 100.0)
+        delta_days     = int(np.round(self.delay_between_new_cases_and_death_timeshift, 0))
+        self.delta_days = delta_days
+        dt = self.df.iloc[-1].name
+        today_idx = int(np.argwhere(self.prediction_fit_df.index == dt))
+        # today_idx = len(self.df) - 1
+        self.today_idx = today_idx
+
+        today_death_idx = today_idx - delta_days
+        self.today_death_idx = today_death_idx
+
+        window_size = 3 * 7
+        v = self.prediction_fit_df[self.prediction_fit_label_fit]
+        self.v = v
+        v1 = v[today_death_idx : today_death_idx + window_size]
+        self.v1 = v1
+        v2 = v[today_death_idx - window_size : today_death_idx]
+        self.v2 = v2
+        vd = (v1.values - v2.values) * death_rate
+        self.vd = vd
+
         expected_death = self.prepend_df['confirmed'].iloc[-1] * death_rate
         today_death    = self.df['death'].iloc[-1]
         delta_death    = expected_death - today_death
-        delta_days     = self.delay_between_new_cases_and_death_timeshift
-        delta_death_across_days = delta_death / delta_days
+
+        # delta_death_across_days = delta_death / delta_days
+        delta_death_2  = np.max(self.vd)
+        delta_death_across_days =  delta_death_2 / window_size
+
         proportion_of_ventilator_patient_dies = 0.4
-        required_ventilator_capacity = delta_death / proportion_of_ventilator_patient_dies
-        return pd.DataFrame([[expected_death, today_death, delta_death, delta_death_across_days, delta_days, required_ventilator_capacity]], columns=['expected_death', 'today_death', 'delta_death', 'delta_death_across_days', 'delta_days', 'required_ventilator_capacity']).round(0)
+        # required_ventilator_capacity = delta_death / proportion_of_ventilator_patient_dies
+
+        required_ventilator_capacity = delta_death_2 / proportion_of_ventilator_patient_dies
+
+        return pd.DataFrame([[expected_death, today_death, delta_death, delta_death_2, delta_death_across_days, window_size, required_ventilator_capacity]], columns=['expected_death', 'today_death', 'delta_death', 'expected_death_2', 'delta_death_across_days', 'delta_days', 'required_ventilator_capacity']).round(0)
 
 US_states1 = [
     'District of Columbia',
