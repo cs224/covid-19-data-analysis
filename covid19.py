@@ -604,7 +604,7 @@ class MortalityAnalysis():
         self.v1 = v1
         v2 = v[today_death_idx - window_size : today_death_idx]
         self.v2 = v2
-        vd = (v1.values - v2.values) * death_rate
+        vd = (v1.values - v2.values)
         self.vd = vd
 
         expected_death = self.prepend_df['confirmed'].iloc[-1] * death_rate
@@ -612,13 +612,26 @@ class MortalityAnalysis():
         delta_death    = expected_death - today_death
 
         # delta_death_across_days = delta_death / delta_days
-        delta_death_2  = np.max(self.vd)
+        delta_death_2  = np.max(self.vd) * death_rate
         delta_death_across_days =  delta_death_2 / window_size
 
-        proportion_of_ventilator_patient_dies = 0.4
-        # required_ventilator_capacity = delta_death / proportion_of_ventilator_patient_dies
+        proportion_of_ventilator_patient_dies = 0.5
+        # p1 =  proportion_of_ventilator_patient_dies * p => p = p1/proportion_of_ventilator_patient_dies
+        p1 = death_rate
+        p  = p1/proportion_of_ventilator_patient_dies
+        # p = p1 + p2 => p2 = p - p1 : proportion of needing ventilator and survives
+        p2 = p - p1
 
-        required_ventilator_capacity = delta_death_2 / proportion_of_ventilator_patient_dies
+        dD = 17.8 - 9 # for patients who die the duration they need a ventilator. At day 9 of symptom onset they go into ICU. At day 17.8 they die.
+        dS = dD + 10 #  for patients who need a ventilator, but who survive
+
+        # Number of ventilators needed is N * p1 * dD + N * p2 * dS
+        # N is the daily number of discovered cases
+        N = np.max(self.vd) / window_size
+
+        required_ventilator_capacity =  N * p1 * dD + N * p2 * dS
+        # required_ventilator_capacity = delta_death / proportion_of_ventilator_patient_dies
+        # required_ventilator_capacity = delta_death_2 / proportion_of_ventilator_patient_dies
 
         return pd.DataFrame([[expected_death, today_death, delta_death, delta_death_2, delta_death_across_days, window_size, required_ventilator_capacity]], columns=['expected_death', 'today_death', 'delta_death', 'expected_death_2', 'delta_death_across_days', 'delta_days', 'required_ventilator_capacity']).round(0)
 
