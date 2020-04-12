@@ -860,6 +860,9 @@ def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=Non
     vs = np.concatenate([np.array([0.0]), country_df[label_fit].values[1:] - country_df[label_fit].values[:-1]])
     label_fit_diff = label + '_fit_diff'
     country_df[label_fit_diff] = vs
+
+    country_df[fit_column + '_diff'] = np.concatenate([np.array([0.0]), country_df[fit_column].values[1:] - country_df[fit_column].values[:-1]])
+
     max_above_100_date = country_df[country_df[label_fit_diff] > new_confirmed_threshold * 1.0].index.max()
     max_above_100_date = max_above_100_date + datetime.timedelta(days=2)
 
