@@ -767,6 +767,8 @@ def find_best_fit(country_df, fit_column='confirmed'):
                 continue
             if len(popt) == 4 and (popt[3] > popt[0]):  # PRIOR: we know the plateau should be smaller than the peak, ignore absurd fits
                 continue
+            if  len(popt) == 4 and (popt[1] * popt[3] < 0.0): # PRIOR: we know that the steady-state-rate (= b * n) cannot be negative
+                continue
 
             # make this the new best result, if it exceeds the previous one by a threshold
             # added cache in case an intermediate result was somewhat better, but the new one isn't much better
