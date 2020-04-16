@@ -180,24 +180,24 @@ class CasesByRegion():
     def tail(self):
         return self.df.tail()
 
-    def plot_daily_stats(self, ax=None):
+    def plot_daily_stats(self, ax=None, days=20):
         if ax is None:
             fig = plt.figure(figsize=(32, 8), dpi=80, facecolor='w', edgecolor='k')
             ax = plt.subplot(1, 1, 1)
         last_day = self.df.index[-1]
         # self.df[['new_confirmed', 'recovered', 'death']].loc[last_day + datetime.timedelta(days=-20):].plot.bar(ax=ax)
-        ax = self.df[['new_confirmed', 'new_recovered', 'new_death']].loc[last_day + datetime.timedelta(days=-20):].plot.bar(ax=ax)
+        ax = self.df[['new_confirmed', 'new_recovered', 'new_death']].loc[last_day + datetime.timedelta(days=-days):].plot.bar(ax=ax)
         plt.tick_params(labelright=True)  # labeltop=True,
         return ax
 
-    def plot_daily_stacked(self):
+    def plot_daily_stacked(self, days=20):
         fig = plt.figure(figsize=(32, 8), dpi=80, facecolor='w', edgecolor='k')
         ax = plt.subplot(1, 1, 1)
         last_day = self.df.index[-1]
         ldf_ = self.df
         ldf = ldf_[['confirmed', 'new_confirmed']].copy()
         ldf['confirmed'] = ldf['confirmed'] - ldf['new_confirmed']
-        ldf[['confirmed', 'new_confirmed']].loc[last_day + datetime.timedelta(days=-20):].plot.bar(ax=ax, stacked=True)
+        ldf[['confirmed', 'new_confirmed']].loc[last_day + datetime.timedelta(days=-days):].plot.bar(ax=ax, stacked=True)
 
         totals = []
         # find the values and append to list
