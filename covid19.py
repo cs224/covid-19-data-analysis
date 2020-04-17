@@ -456,13 +456,17 @@ def generate_life_lines(in_df, random_seed=None, gamma_distribution_parameters=N
 
 
 class MortalityAnalysis():
-    def __init__(self, region, first_date=None, init_add=0, mult=1.0, gamma_distribution_parameters=None):
+    def __init__(self, region, first_date=None, init_add=0, mult=1.0, gamma_distribution_parameters=None, df=None):
         self.region = region
         self.first_date = first_date
         self.init_add = init_add
         self.mult = mult
         self.gamma_distribution_parameters = gamma_distribution_parameters
-        self.df = get_cases_by_region(region=region)
+        if df is None:
+            self.df = get_cases_by_region(region=region)
+        else:
+            self.df = df
+
         self.prepend_df = prepend(self.df, first_date=first_date, init_add=init_add, mult=mult)
 
         self.calculate_delay_between_new_cases_and_death()
