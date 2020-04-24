@@ -838,7 +838,7 @@ def fitCurve(country_df, fit_column='confirmed'):
         return [], [], sys.float_info.max, ""
 
 
-def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=None, new_confirmed_threshold=100.0, fit_column='confirmed'):
+def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=None, new_confirmed_threshold=100.0, fit_column='confirmed', range_append_nr_entires=40):
     if in_df is None:
         mortality_analysis = MortalityAnalysis(country_name, first_date=first_date, init_add=init_add)
         ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date].copy()
@@ -857,7 +857,7 @@ def prepare_country_prediction(country_name, first_date, init_add=0.0, in_df=Non
 
     last_x = int(country_df.x.iloc[-1])
     last_day = country_df.index[-1]
-    for i in range(1, 40):
+    for i in range(1, range_append_nr_entires):
         x = last_x + i
         d = last_day + datetime.timedelta(days=i)
         country_df.loc[d] = [x, np.nan]
