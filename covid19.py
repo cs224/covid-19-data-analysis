@@ -17,6 +17,8 @@ import sys, os
 import json
 import urllib.request
 import yaml
+import copy
+
 
 # fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Confirmed.csv'
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv'
@@ -163,6 +165,10 @@ def get_cases_by_selector(selector, region='Germany'):
     return ldf.astype(np.int)
 
 def get_cases_by_region(region='Germany'):
+
+    if region == 'Germany':
+        return get_rki_df()
+
     r = region
     if isinstance(region, str):
         region = [region]
@@ -172,6 +178,7 @@ def get_cases_by_region(region='Germany'):
 
 class CasesByRegion():
     def __init__(self, region, df=None):
+        self.region = region
         if df is None:
             self.df = get_cases_by_region(region=region)
         else:
@@ -220,6 +227,170 @@ class CasesByRegion():
         # ax.yaxis.set_label_position("right")
         # ax.yaxis.tick_right()
 
+    def fit(self, first_date=None, init_add=0.0, new_confirmed_threshold=100.0, range_append_nr_entires=40):
+
+        # Only take the data as valid starting with first_date and prepend it with ramp up data.
+        mortality_analysis = MortalityAnalysis(self.region, first_date=first_date, init_add=init_add, df = self.df)
+        if first_date is not None:
+            ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date]
+        else:
+            ldf = mortality_analysis.prepend_df
+
+        fit_df0 = ldf[['confirmed', 'new_confirmed']].reset_index(drop=True)
+        # .reset_index(drop=True).reset_index(name='x')
+        fit_df0.index.name = 'x'
+        fit_df0 = fit_df0.reset_index().astype(np.float)
+        fit_df0.index = ldf.index
+        fit_df0['x'] = fit_df0['x'] + 1.0
+        self.fit_df0 = fit_df0
+
+        # Don't take the last two days for curve fitting
+        fit_df = fit_df0.iloc[:-2].copy()
+        self.fit_df = fit_df
+
+        max_value = np.max(fit_df.confirmed)
+
+        f1 = FitExp(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [10, 0.2])
+        f1.fit().fit2()
+        self.f1 = f1
+        f2 = FitSig(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10])
+        f2.fit().fit2()
+        self.f2 = f2
+
+        # f1 = curve_fit(fitExp, fit_df.x, fit_df.confirmed, [10, 0.2], 'exp')
+        # f2 = curve_fit(fitSig, fit_df.x, fit_df.confirmed, [max_value * 3 / 2, 0.2, -10], 'sigmoid')
+
+        self.fit_               = None
+        self.fit_choices        = None
+        self.sorted_fit_choices = None
+
+        if f1.seor() < f2.seor():
+            self.fit_ = f1
+        else:
+            # f2 = FitSig   (fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10])
+            # f2.fit()
+
+            f3 = FitSigExt(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10, 100])
+            f3.fit()
+            self.f3 = f3
+
+            f2_p0 = np.array([f2.f_derivative.popt[0], f2.f_derivative.popt[1], f2.f_derivative.popt[1], f2.f_derivative.popt[2]])
+            f4 = FitSigAsymmetric(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, f2_p0)
+            f4.fit()
+            self.f4 = f4
+
+            f3_p0 = np.array([f3.f_derivative.popt[0], f3.f_derivative.popt[1], f3.f_derivative.popt[1], f3.f_derivative.popt[2], f3.f_derivative.popt[3]])
+            f5 = FitSigExtAsymmetric(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, f3_p0)
+            f5.fit()
+            self.f5 = f5
+
+            # f2   = curve_fit(fitSigDerivative, fit_df.x, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10], 'sigmoid')
+            # f2.fn_integral   = fitSig
+            # f2.fn_derivative = fitSigDerivative
+            #
+            # p0 = np.array([f2.popt[0], f2.popt[1], f2.popt[1], f2.popt[2]])
+            # f2_1 = curve_fit(fitSigAsymmetricDerivative, fit_df.x, fit_df.new_confirmed, p0, 'sigmoid+asymmetric')
+            # f2_1.fn_integral   = fitSigAsymmetric
+            # f2_1.fn_derivative = fitSigAsymmetricDerivative
+            #
+            # f2_2 = curve_fit_minimize(fitSigAsymmetricDerivative, fit_df.x, fit_df.new_confirmed, p0, 'sigmoid+asymmetric')
+            # if f2_2.popt[0] < 10.0 or f2_2.popt[1] < 0.0001 or f2_2.popt[2] < 0.0001:
+            #     bounds = ((10.0, None), (0.0001, None), (0.0001, None), (None, None))
+            #     f2_2 = curve_fit_minimize(fitSigAsymmetricDerivative, fit_df.x, fit_df.new_confirmed, p0, 'sigmoid+asymmetric', bounds=bounds)
+            # f2_2.fn_integral   = fitSigAsymmetric
+            # f2_2.fn_derivative = fitSigAsymmetricDerivative
+            #
+            # f3   = curve_fit(fitSigExtDerivative, fit_df.x, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10, 100], 'sigmoid+linear')
+            # f3.fn_integral   = fitSigExt
+            # f3.fn_derivative = fitSigExtDerivative
+            #
+            # p0 = np.array([f3.popt[0], f3.popt[1], f3.popt[1], f3.popt[2], f3.popt[3]])
+            # f3_1 = curve_fit(fitSigExtAsymmetricDerivative, fit_df.x, fit_df.new_confirmed, p0, 'sigmoid+linear+asymmetric')
+            # f3_1.fn_integral   = fitSigExtAsymmetric
+            # f3_1.fn_derivative = fitSigExtAsymmetricDerivative
+            #
+            # f3_2 = curve_fit_minimize(fitSigExtAsymmetricDerivative, fit_df.x, fit_df.new_confirmed, p0, 'sigmoid+linear+asymmetric')
+            # if f3_2.popt[0] < 10.0 or f3_2.popt[1] < 0.0001 or f3_2.popt[2] < 0.0001 or f3_2.popt[4] < 10.0:
+            #     bounds = ((10.0, None), (0.0001, None), (0.0001, None), (None, None), (10.0, None))
+            #     f3_2 = curve_fit_minimize(fitSigExtAsymmetricDerivative, fit_df.x, fit_df.new_confirmed, p0, 'sigmoid+linear+asymmetric', bounds=bounds)
+            # f3_2.fn_integral   = fitSigExtAsymmetric
+            # f3_2.fn_derivative = fitSigExtAsymmetricDerivative
+            #
+            # fit_choices = [f2, f2_1, f2_2, f3, f3_1, f3_2]
+            # self.fit_choices = fit_choices.copy()
+            # sorted_fit_choices = sorted(fit_choices, key=lambda x: x.seor)
+            # self.sorted_fit_choices = sorted_fit_choices
+            #
+            # self.fit_ = sorted_fit_choices[0]
+
+            fit_choices             = [f2, f3, f4, f5]
+            self.fit_choices        = fit_choices.copy()
+            sorted_fit_choices      = sorted(fit_choices, key=lambda x: x.seor())
+            self.sorted_fit_choices = sorted_fit_choices
+            self.fit_ = sorted_fit_choices[0]
+            self.fit_.fit2()
+
+
+        last_x = int(fit_df0.x.iloc[-1])
+        last_day = fit_df0.index[-1]
+        for i in range(1, range_append_nr_entires):
+            x = last_x + i
+            d = last_day + datetime.timedelta(days=i)
+            fit_df0.loc[d] = [x, np.nan, np.nan]
+
+        # # fitFunc = fitSig
+        # proj = self.fit_.call_fn_integral(fit_df0.x)
+        # fit_df0['fit'] = proj
+        #
+        # proj = self.fit_.call_fn_integral(fit_df.x)
+        # growthRate = proj[-1] / proj[-2] - 1
+        # self.growthRate = growthRate
+        #
+        # proj = self.fit_.call_fn_derivative(fit_df0.x)
+        # fit_df0['fit_diff'] = proj
+
+        proj = self.fit_.f_integral.call(fit_df0.x)
+        fit_df0['fit'] = proj
+
+        proj = self.fit_.f_integral.call(fit_df.x)
+        growthRate = proj[-1] / proj[-2] - 1
+        self.growthRate = growthRate
+
+        proj = self.fit_.f_derivative.call(fit_df0.x)
+        fit_df0['fit_diff'] = proj
+
+        max_above_100_date = fit_df0[fit_df0['fit_diff'] > new_confirmed_threshold * 1.0].index.max()
+        max_above_100_date = max_above_100_date + datetime.timedelta(days=2)
+        self.max_above_100_date = max_above_100_date
+        self.fit_df0 = fit_df0
+
+    def fit_overview(self):
+        return [item.f_derivative for item in self.fit_choices]
+
+    def plot_with_fits(self, ax=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+        # https://stackoverflow.com/questions/26752464/how-do-i-align-gridlines-for-two-y-axis-scales-using-matplotlib
+        self.fit_df0[['confirmed']].plot(ax=ax, marker=mpl.path.Path.unit_circle(), markersize=5);
+        self.fit_df0[['fit']].plot(ax=ax);
+        # ax.set_ylim(-100,None)
+
+        ax2 = ax.twinx()
+        self.fit_df0[['fit_diff']].plot(ax=ax2);
+        self.fit_df0[['new_confirmed']].reset_index().plot.scatter(ax=ax2, x = 'index', y = 'new_confirmed', c='limegreen')
+        # ax2.set_ylim(-100,None)
+
+        # l = len(ax.get_yticks())
+        # a1 = ax.get_yticks()[0]
+        # e1 = ax.get_yticks()[-1]
+        # a2 = ax2.get_yticks()[0]
+        # e2 = ax2.get_yticks()[-1]
+        # ax.set_yticks(np.linspace(a1, e1, l));
+        # ax2.set_yticks(np.linspace(a2, e2, l));
+        ax2.grid(None)
+        itm = self.fit_df0.loc[self.max_above_100_date]
+        print('{}; growth-rate: {}, date:{}, projected value: {}'.format(self.fit_, self.growthRate, itm.name, itm['fit_diff']))
 
 def get_country_overview():
     if augment_time_series_from_daily_snapshots_date_range is not None and len(augment_time_series_from_daily_snapshots_date_range) > 0:
@@ -718,16 +889,6 @@ def get_us_data_for_time_series_(input_df):
     return ldf
 
 
-def fitExp(t, a, b):
-    return a * np.exp(b * t)
-
-
-def fitSig(t, a, b, c):
-    return a / (1.0 + np.exp(-b * t - c))
-
-def fitSigExt(t, a, b, c, n):
-    return fitSig(t,a,b,c) + n*np.log(1+np.exp(b*t+c))
-
 
 def find_best_fit(country_df, fit_column='confirmed'):
 
@@ -994,3 +1155,355 @@ def get_rki(try_max=10):
         df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
 
     return df
+
+
+rki_df_url   = 'https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data'
+rki_data_df = None
+def get_rki_data():
+    global rki_data_df
+
+    if rki_data_df is not None:
+        return rki_data_df
+
+    rki_data_df = pd.read_csv('https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data')
+    return rki_data_df
+
+def get_rki_df(state=None, county=None, time_anchor_column_name='Meldedatum'):
+    ldf = get_rki_data()
+    return create_rki_df(ldf, state=None, county=None, time_anchor_column_name='Meldedatum')
+
+def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall'):
+    ldf = in_df.copy()
+    if state is not None:
+        ldf = ldf[ldf['Bundesland'] == state].copy()
+    if county is not None:
+        ldf = ldf[ldf['Landkreis'] == county].copy()
+    ldf[time_anchor_column_name] = pd.to_datetime(ldf[time_anchor_column_name]).dt.tz_localize(None)
+    ldf = ldf.set_index(time_anchor_column_name)
+    ldf.index.name = 'index'
+    lds = ldf[count_column_name].resample('D').sum()
+    return lds
+
+
+def create_rki_df(in_df, state=None, county=None, time_anchor_column_name='Meldedatum'):
+    lds_confirmed = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlFall')
+    lds_recovered = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlGenesen')
+    lds_death = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlTodesfall')
+    ldf = pd.DataFrame()
+    ldf['confirmed'] = lds_confirmed.cumsum()
+    ldf['recovered'] = lds_recovered.cumsum()
+    ldf['death'] = lds_death.cumsum()
+
+    ldf['new_confirmed'] = lds_confirmed
+    ldf['new_recovered'] = lds_recovered
+    ldf['new_death'] = lds_death
+    return ldf
+
+def discrete_diff(in_da, first_value=np.nan):
+    in_da = np.array(in_da)
+    return np.concatenate([np.array([first_value]), in_da[1:] - in_da[:-1]])
+
+def fitExp(t, a, b):
+    return a * np.exp(b * t)
+
+def fitExpDerivative(x, a, b):
+    return a * b * np.exp(b*x)
+
+def fitSig(t, a, b, c):
+    return a / (1.0 + np.exp(-b * t - c))
+
+# Derivative of the sigmoid fit function
+def fitSigDerivative(t, a, b, c):
+    s=fitSig(t,1,b,c)
+    return a*b*s*(1-s)
+
+def fitSigAsymmetric(t, a, b1, b2, c):
+    ti = b1*t+c
+    negative  = (-np.sign(ti) + np.abs(np.sign(ti)))/2.0
+    positive  = (np.sign(ti)  + np.abs(np.sign(ti)))/2.0
+
+    b = negative * b1 + positive * b2
+
+    c1 = c
+    c2 = b2 / b1 * c
+    c = negative * c1 + positive * c2
+
+    a1 = a
+    a2 = b1 / b2 * a
+    a = negative * a1 + positive * a2
+
+    dt = positive * (a2 - a1)/2.0
+
+    return fitSig(t, a, b, c) - dt
+
+# -b*t -c == 0 => t = -c/b
+# b1*t+c = b2*t+c2 at -c/b => c2=b2*c/b1
+def fitSigAsymmetricDerivative(t, a, b1, b2, c):
+    ti = b1*t+c
+    negative  = (-np.sign(ti) + np.abs(np.sign(ti)))/2.0
+    positive  = (np.sign(ti)  + np.abs(np.sign(ti)))/2.0
+
+    b = negative * b1 + positive * b2
+
+    c1 = c
+    c2 = b2 / b1 * c
+    c = negative * c1 + positive * c2
+
+    a1 = a
+    a2 = b1 / b2 * a
+    a = negative * a1 + positive * a2
+
+    return fitSigDerivative(t, a, b, c)
+
+def fitSigExt(t, a, b, c, n):
+    return fitSig(t,a,b,c) + n*np.log(1+np.exp(b*t+c))
+
+def fitSigExtDerivative(t, a, b, c, n):
+    s=fitSig(t,1,b,c)
+    return a*b*s*(1-s) + fitSig(t, n*b, b,c)
+
+
+def fitSigExtAsymmetric(t, a, b1, b2, c, n):
+    ti = b1 * t + c
+    negative = (-np.sign(ti) + np.abs(np.sign(ti))) / 2.0
+    positive = (np.sign(ti) + np.abs(np.sign(ti))) / 2.0
+
+    b = negative * b1 + positive * b2
+
+    c1 = c
+    c2 = b2 / b1 * c
+    c = negative * c1 + positive * c2
+
+    a1 = a
+    a2 = (a * b1 / 4 + b1 * n / 2 - b2 * n / 2) * 4 / b2
+    a = negative * a1 + positive * a2
+
+    dt = positive * (a2 - a1) / 2.0
+
+    return fitSigExt(t, a, b, c, n) - dt
+
+def fitSigExtAsymmetricDerivative(t, a, b1, b2, c, n):
+    ti = b1*t+c
+    negative  = (-np.sign(ti) + np.abs(np.sign(ti)))/2.0
+    positive  = (np.sign(ti)  + np.abs(np.sign(ti)))/2.0
+
+    b = negative * b1 + positive * b2
+
+    c1 = c
+    c2 = b2 / b1 * c
+    c = negative * c1 + positive * c2
+
+    a1 = a
+    a2 = (a * b1 / 4 + b1 * n / 2 - b2 * n / 2) * 4 / b2
+    a = negative * a1 + positive * a2
+
+    return fitSigExtDerivative(t, a, b, c, n)
+
+
+def fn_minimize(fitFunc, x, y):
+    def f(params):
+        return np.sum((y - fitFunc(x, *params)) ** 2)
+
+    return f
+
+class FitResult():
+
+    def __init__(self, fitFunc, seor, popt, pcov, label):
+        self.fitFunc = fitFunc
+        self.seor    = seor
+        self.popt    = popt
+        self.pcov    = pcov
+        self.label   = label
+
+    def call(self, x):
+        return self.fitFunc(x, *self.popt)
+
+    def __str__(self):
+        return '{}: seor: {}, popt: {}'.format(self.label, self.seor, self.popt)
+
+    def __repr__(self):
+        return self.__str__()
+
+def curve_fit(fitFunc, x, y, p0, label):
+    popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y,  p0)
+    seor = math.sqrt(sum((y - fitFunc(x, *(popt))) ** 2) / (len(x) - len(popt)))
+    return FitResult(fitFunc, seor, popt, pcov, label)
+
+def curve_fit_minimize(fitFunc, x, y, p0, label, bounds=None):
+    lf = fn_minimize(fitFunc, x, y)
+    res = scipy.optimize.minimize(lf, p0, method='L-BFGS-B', bounds=bounds, options = dict(maxiter=100))  #
+    if not res.success:
+        return FitResult(fitFunc, np.inf, None, None, label)
+
+    popt = res.x
+    seor = math.sqrt(sum((y - fitFunc(x, *(popt))) ** 2) / (len(x) - len(popt)))
+    return FitResult(fitFunc, seor, popt, None, label)
+
+class CurveFit():
+
+    def __init__(self, x, y, dy, p0, label):
+        self.x = x
+        self.y = y
+        self.dy = dy
+        self.p0 = p0
+        self.label = label
+        self.f_integral   = FitResult(None, np.inf, None, None, None)
+        self.f_derivative = FitResult(None, np.inf, None, None, None)
+
+    def predict_y(self, x):
+        return self.f_integral.call(x)
+
+    def predict_dy(self, x):
+        return self.f_derivative.call(x)
+
+    def seor(self):
+        return self.f_derivative.seor
+
+    def __str__(self):
+        return '{}: seor: {}'.format(self.label, self.seor())
+
+    def __repr__(self):
+        return self.__str__()
+
+class CurveFitWithConstraints(CurveFit):
+
+    def __init__(self, x, y, dy, p0, label, bounds):
+        super().__init__(x, y, dy, p0, label)
+        self.bounds = bounds
+
+    def fit_(self, fitFunc, ytarget, p0):
+        f1 = curve_fit(fitFunc, self.x, ytarget, p0, self.label)
+        if not self.check_constraints_ok(f1):
+            f1.seor = np.inf
+
+        f2 = curve_fit_minimize(fitFunc, self.x, ytarget, p0, self.label)
+        if not self.check_constraints_ok(f2):
+            f2 = curve_fit_minimize(fitFunc, self.x, ytarget, p0, self.label, bounds=self.bounds)
+
+        if f1.seor < f2.seor:
+            return f1
+        else:
+            return f2
+
+class FitExp(CurveFit):
+
+    def __init__(self, x, y, dy, p0):
+        super().__init__(x, y, dy, p0, 'exp')
+
+    def fit(self):
+        f = curve_fit(fitExp, self.x, self.y, self.p0, self.label)
+        self.f_integral   = f
+
+        self.f_derivative = FitResult(fitExpDerivative, None, self.f_integral.popt, None, self.label)  # copy.copy(self.f_derivative)
+        return self
+
+    def fit2(self):
+        self.f_derivative   = curve_fit(fitExpDerivative, self.x, self.dy, self.f_integral.popt, self.label)
+        return self
+
+
+class FitSig(CurveFit):
+
+    def __init__(self, x, y, dy, p0):
+        super().__init__(x, y, dy, p0, 'sigmoid')
+        self.lower_a = 10.0
+        self.lower_b = 0.0001
+
+    def check_constraints_ok(self, f):
+        return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b)
+
+    def fit(self):
+        f = curve_fit(fitSigDerivative, self.x, self.dy, self.p0, self.label)
+        if not self.check_constraints_ok(f):
+            f.seor = np.inf
+
+        self.f_derivative = f
+
+        self.f_integral   = FitResult(fitSig, None, self.f_derivative.popt, None, self.label)  # copy.copy(self.f_derivative)
+        return self
+
+    def fit2(self):
+        self.f_integral   = curve_fit(fitSig, self.x, self.y, self.f_derivative.popt, self.label)
+        return self
+
+    def __str__(self):
+        return super().__str__() + ', max asymptotic: {}'.format(self.f_integral.popt[0])
+
+class FitSigAsymmetric(CurveFitWithConstraints):
+
+    def __init__(self, x, y, dy, p0):
+        self.lower_a  = 10.0
+        self.lower_b1 = 0.0001
+        self.lower_b2 = 0.0001
+        super().__init__(x, y, dy, p0, 'sigmoid+asymmetric', ((self.lower_a, None), (self.lower_b1, None), (self.lower_b2, None), (None, None)))
+
+    def check_constraints_ok(self, f):
+        return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b1 or f.popt[2] < self.lower_b2)
+
+    def fit(self):
+        self.f_derivative = self.fit_(fitSigAsymmetricDerivative, self.dy, self.p0)
+        self.f_integral   = FitResult(fitSigAsymmetric, None, self.f_derivative.popt, None, self.label)
+        return self
+
+    def fit2(self):
+        self.f_integral = self.fit_(fitSigAsymmetric, self.y, self.f_derivative.popt)
+        return self
+
+    def __str__(self):
+        a = self.f_integral.popt[0]
+        b1 = self.f_integral.popt[1]
+        b2 = self.f_integral.popt[2]
+        a1 = a
+        a2 = b1 / b2 * a
+        dt = (a2 - a1) / 2.0
+        ma = a2 - dt
+        return super().__str__() + ', max asymptotic: {}'.format(ma)
+
+class FitSigExt(CurveFit):
+
+    def __init__(self, x, y, dy, p0):
+        super().__init__(x, y, dy, p0, 'sigmoid+linear')
+        self.lower_a = 10.0
+        self.lower_b = 0.0001
+        self.lower_n = 1.0
+
+    def check_constraints_ok(self, f):
+        return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b or f.popt[3] < self.lower_n)
+
+    def fit(self):
+        f = curve_fit(fitSigExtDerivative, self.x, self.dy, self.p0, self.label)
+        if not self.check_constraints_ok(f):
+            f.seor = np.inf
+
+        self.f_derivative = f
+
+        self.f_integral   = FitResult(fitSigExt, None, self.f_derivative.popt, None, self.label)  # copy.copy(self.f_derivative)
+        return self
+
+    def fit2(self):
+        self.f_integral   = curve_fit(fitSigExt, self.x, self.y, self.f_derivative.popt, self.label)
+        return self
+
+    def __str__(self):
+        return super().__str__() + ', max asymptotic: {}'.format(self.f_integral.popt[0])
+
+class FitSigExtAsymmetric(CurveFitWithConstraints):
+
+    def __init__(self, x, y, dy, p0):
+        self.lower_a  = 10.0
+        self.lower_b1 = 0.0001
+        self.lower_b2 = 0.0001
+        self.lower_n = 1.0
+        super().__init__(x, y, dy, p0, 'sigmoid+asymmetric', ((self.lower_a, None), (self.lower_b1, None), (self.lower_b2, None), (None, None), (self.lower_n, None)))
+
+    def check_constraints_ok(self, f):
+        return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b1 or f.popt[2] < self.lower_b2 or f.popt[4] < self.lower_n)
+
+    def fit(self):
+        self.f_derivative = self.fit_(fitSigExtAsymmetricDerivative, self.dy, self.p0)
+        self.f_integral   = FitResult(fitSigExtAsymmetric, None, self.f_derivative.popt, None, self.label)
+        return self
+
+    def fit2(self):
+        self.f_integral = self.fit_(fitSigExtAsymmetric, self.y, self.f_derivative.popt)
+        return self
