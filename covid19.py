@@ -18,7 +18,11 @@ import json
 import urllib.request
 import yaml
 import copy
-
+import gpflow, GPy
+import simdkalman
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+import warnings
 
 # fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Confirmed.csv'
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv'
@@ -166,8 +170,8 @@ def get_cases_by_selector(selector, region='Germany'):
 
 def get_cases_by_region(region='Germany'):
 
-    if region == 'Germany':
-        return get_rki_df()
+    # if region == 'Germany':
+    #     return get_rki_df()
 
     r = region
     if isinstance(region, str):
@@ -183,6 +187,8 @@ class CasesByRegion():
             self.df = get_cases_by_region(region=region)
         else:
             self.df = df
+
+        self.df.fillna(0.0, inplace=True)
 
     def tail(self):
         return self.df.tail()
@@ -251,7 +257,11 @@ class CasesByRegion():
         max_value = np.max(fit_df.confirmed)
 
         f1 = FitExp(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [10, 0.2])
-        f1.fit().fit2()
+        try:
+            f1.fit().fit2()
+        except:
+            f1.f_integral.seor = np.inf
+            f1.f_derivative.seor = np.inf
         self.f1 = f1
         f2 = FitSig(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10])
         f2.fit().fit2()
@@ -353,21 +363,25 @@ class CasesByRegion():
         fit_df0['fit'] = proj
 
         proj = self.fit_.f_integral.call(fit_df.x)
-        growthRate = proj[-1] / proj[-2] - 1
+        growthRate = round(proj[-1] / proj[-2] - 1, 3)
         self.growthRate = growthRate
 
         proj = self.fit_.f_derivative.call(fit_df0.x)
         fit_df0['fit_diff'] = proj
 
         max_above_100_date = fit_df0[fit_df0['fit_diff'] > new_confirmed_threshold * 1.0].index.max()
-        max_above_100_date = max_above_100_date + datetime.timedelta(days=2)
+        max_date = fit_df0.index.max()
+        if max_above_100_date + datetime.timedelta(days=2) < max_date:
+            max_above_100_date = max_above_100_date + datetime.timedelta(days=2)
+        else:
+            max_above_100_date = max_date
         self.max_above_100_date = max_above_100_date
         self.fit_df0 = fit_df0
 
     def fit_overview(self):
         return [item.f_derivative for item in self.fit_choices]
 
-    def plot_with_fits(self, ax=None):
+    def plot_with_fits(self, ax=None, restriction_start_date=None):
         if ax is None:
             fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
             ax = plt.subplot(1,1,1)
@@ -375,6 +389,9 @@ class CasesByRegion():
         self.fit_df0[['confirmed']].plot(ax=ax, marker=mpl.path.Path.unit_circle(), markersize=5);
         self.fit_df0[['fit']].plot(ax=ax);
         # ax.set_ylim(-100,None)
+
+        if restriction_start_date is not None:
+            ax.axvline(restriction_start_date)
 
         ax2 = ax.twinx()
         self.fit_df0[['fit_diff']].plot(ax=ax2);
@@ -391,6 +408,175 @@ class CasesByRegion():
         ax2.grid(None)
         itm = self.fit_df0.loc[self.max_above_100_date]
         print('{}; growth-rate: {}, date:{}, projected value: {}'.format(self.fit_, self.growthRate, itm.name, itm['fit_diff']))
+
+    def calculate_R_estimates(self):
+        self.prepareRdf()
+        self.calculate_R_from_fit_diff()
+        self.calc_R_from_lnqI()
+        return self.Rdf
+
+    def prepareRdf(self, column_name='new_confirmed', average_infectious_period=7.0):
+        in_df = self.df
+        rdf = pd.DataFrame(index=in_df.index)
+
+        self.average_infectious_period = average_infectious_period
+        self.gamma = 1 / average_infectious_period
+
+        ws = int(average_infectious_period)
+        if ws < average_infectious_period:
+            ws += 1
+        self.ws = ws
+
+        rdf['x'] = np.arange(len(in_df)) * 1.0
+        rdf['v'] = in_df[column_name]
+        rdf['I_t'] = in_df[column_name].rolling(window=ws).sum()  # , min_periods=1
+
+        rdf = rdf.iloc[:-2].copy()
+        self.Rdf = rdf
+
+    def calculate_R_from_fit_diff(self):
+
+        fit_diff_column_name = 'fit_diff'
+        rdf = self.fit_df0[[fit_diff_column_name]].copy()
+        lds = rdf[fit_diff_column_name]
+        rdf['v'] = lds
+        rdf['I_t'] = lds.rolling(window=self.ws).sum()  # , min_periods=1
+        rdf['qI'] = discrete_division(rdf['I_t'])
+        rdf['gr_It'] = rdf['qI'] - 1.0
+
+        # rdf['dI_t'] = discrete_diff(rdf['I_t'].values)
+        # lda_gr_It = rdf['dI_t'].values[1:] / rdf['I_t'].values[:-1]
+        # lda_gr_It = np.concatenate([np.array([np.nan]), lda_gr_It])
+        # rdf['gr_It'] = lda_gr_It
+
+        lda_R = np.maximum(1.0 + 1 / self.gamma * rdf['gr_It'], 0.0)
+        rdf['R_t'] = lda_R
+
+        self.Rdf['fit_R'] = rdf['R_t'].reindex(self.Rdf.index)
+
+    def calc_R_from_lnqI(self):
+
+        ldf_I = self.Rdf[['I_t']].copy()
+        ldf_I['x'] = np.arange(len(ldf_I)) * 1.0
+        ldf_I['qI'] = discrete_division(ldf_I['I_t'])
+        ldf_I['lnqI'] = np.log(ldf_I['qI'])
+
+        self.calc_R_from_lnqI_gp(ldf_I)
+        self.calc_R_from_lnqI_KF(ldf_I)
+        self.calc_R_from_lnqI_ll(ldf_I)
+
+        ldf_R = ldf_I[['lnqI', 'gp_lnqI', 'kf_lnqI', 'll_lnqI']].copy()
+        ldf_R.columns = ['R', 'gp_R', 'kf_R', 'll_R']
+        ldf_R = np.exp(ldf_R) - 1
+
+        ldf_R = np.maximum(1.0 + 1 / self.gamma * ldf_R, 0.0)
+        ldf_R = ldf_R.reindex(self.Rdf.index)
+
+        self.Rdf = pd.concat([self.Rdf, ldf_R], axis=1, sort=False)
+
+        mean_R_columns = ['fit_R', 'gp_R', 'll_R']
+        self.mean_R_columns = mean_R_columns
+        self.Rdf['mean_R'] = self.Rdf[mean_R_columns].mean(axis=1)
+        all_R_columns = ['R', 'fit_R', 'gp_R', 'kf_R', 'll_R', 'mean_R']
+        self.all_R_columns = all_R_columns
+        self.show_R_columns = all_R_columns[1:]
+
+        self.Idf = ldf_I
+
+    def calc_R_from_lnqI_gp(self, ldf_I):
+        ldf_I['gp_lnqI'] = np.nan
+
+        try:
+            self.calc_R_from_lnqI_gp_gpflow(ldf_I)
+        except Exception as e:
+            warnings.warn("calc_R_from_lnqI_gp_gpflow failed")
+
+            try:
+                self.calc_R_from_lnqI_gp_gpy(ldf_I)
+            except Exception as e:
+                warnings.warn("calc_R_from_lnqI_gp_gpy failed")
+
+    def calc_R_from_lnqI_gp_gpflow(self, ldf_I):
+        ldf = ldf_I[np.isfinite(ldf_I.lnqI)]
+        X = ldf.x.values.reshape(-1, 1)
+        Y = ldf.lnqI.values.reshape(-1, 1)
+
+        k1 = gpflow.kernels.RBF(variance=1.0, lengthscales=1.0)
+        kernel = k1
+
+        m = gpflow.models.GPR(data=(X, Y), kernel=kernel, noise_variance=1.0)
+
+        opt = gpflow.optimizers.Scipy()
+        opt.minimize(m.training_loss, variables=m.trainable_variables, options=dict(disp=True), compile=False)  # 'Nelder-Mead', method='trust-exact', , maxiter=30
+        ldf_I['gp_lnqI'] = m.predict_f(ldf_I.x.values.reshape(-1, 1))[0].numpy().reshape(-1)
+        self.gp_m = m
+
+    def calc_R_from_lnqI_gp_gpy(self, ldf_I):
+
+        ldf = ldf_I[np.isfinite(ldf_I.lnqI)]
+        X = ldf.x.values.reshape(-1, 1)
+        Y = ldf.lnqI.values.reshape(-1, 1)
+
+        k1 = k1 = GPy.kern.RBF(input_dim=1, variance=1., lengthscales=1.)
+        kernel = k1
+
+        m = GPy.models.GPRegression(X, Y, kernel)
+        m.optimize_restarts(num_restarts=10, robust=True)
+
+        ldf_I['gp_lnqI'] = m.predict(ldf_I.x.values.reshape(-1, 1))[0].numpy().reshape(-1)
+        self.gp_m = m
+
+    def calc_R_from_lnqI_KF(self, ldf_I):
+        lds_ = ldf_I['lnqI'].copy()
+        lds  = lds_[np.isfinite(lds_)].copy()
+        lds_.iloc[:] = np.nan
+
+        kf = simdkalman.KalmanFilter(
+            state_transition=np.array([[1, 1], [0, 1]]),
+            process_noise=np.diag([0.1, 0.01]),
+            observation_model=np.array([[1, 0]]),
+            observation_noise=1.0)
+        kf = kf.em(lds, n_iter=10)
+        smoothed = kf.smooth(lds)
+        ldf_I['kf_lnqI'] = np.nan
+        v = smoothed.observations.mean
+
+        lds.iloc[:]  = v
+        lds_.loc[lds.index] = lds
+        ldf_I.loc[:,'kf_lnqI'] = lds_.values
+
+        self.kf = kf
+
+    def calc_R_from_lnqI_ll(self, ldf_I):
+        lds_ = ldf_I['lnqI'].copy()
+        lds  = lds_[np.isfinite(lds_)].copy()
+        lds_.iloc[:] = np.nan
+
+        mod_ll = sm.tsa.UnobservedComponents(lds, 'local level')
+        res_ll = mod_ll.fit(maxiter=200, disp=False)
+
+        lds.iloc[:]  = res_ll.smoothed_state[0]
+        lds_.loc[lds.index] = lds
+        ldf_I.loc[:,'ll_lnqI'] = lds_.values
+
+    def plot_R(self, ax=None, nr_days_back=30, plot_start_date=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        plot_R_columns = ['fit_R', 'll_R', 'mean_R']
+        self.plot_R_columns = plot_R_columns
+        if plot_start_date is None:
+            self.Rdf[plot_R_columns].iloc[-nr_days_back:].plot(ax=ax)
+        else:
+            self.Rdf[plot_R_columns].loc[pd.to_datetime(plot_start_date):].plot(ax=ax)
+        ax.axhline(1.0)
+
+        return ax
+
+    def R(self):
+        return self.Rdf[self.show_R_columns].iloc[[-1]]
+
 
 def get_country_overview():
     if augment_time_series_from_daily_snapshots_date_range is not None and len(augment_time_series_from_daily_snapshots_date_range) > 0:
@@ -640,12 +826,13 @@ class MortalityAnalysis():
 
         self.prepend_df = prepend(self.df, first_date=first_date, init_add=init_add, mult=mult)
 
+    def fit2(self):
         self.calculate_delay_between_new_cases_and_death()
         loc = max(self.delay_between_new_cases_and_death_timeshift - (gamma_mean - gamma_loc), 0.0)
-        if gamma_distribution_parameters is None:
+        if self.gamma_distribution_parameters is None:
             self.gamma_distribution_parameters = dict(loc=loc, k=gamma_k, theta=gamme_theta)
         else:
-            self.gamma_distribution_parameters =gamma_distribution_parameters
+            self.gamma_distribution_parameters = self.gamma_distribution_parameters
 
         self.prepare_prediction()
 
@@ -1157,52 +1344,6 @@ def get_rki(try_max=10):
     return df
 
 
-rki_df_url   = 'https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data'
-rki_data_df = None
-def get_rki_data():
-    global rki_data_df
-
-    if rki_data_df is not None:
-        return rki_data_df
-
-    rki_data_df = pd.read_csv('https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data')
-    return rki_data_df
-
-def get_rki_df(state=None, county=None, time_anchor_column_name='Meldedatum'):
-    ldf = get_rki_data()
-    return create_rki_df(ldf, state=None, county=None, time_anchor_column_name='Meldedatum')
-
-def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall'):
-    ldf = in_df.copy()
-    if state is not None:
-        ldf = ldf[ldf['Bundesland'] == state].copy()
-    if county is not None:
-        ldf = ldf[ldf['Landkreis'] == county].copy()
-    ldf[time_anchor_column_name] = pd.to_datetime(ldf[time_anchor_column_name]).dt.tz_localize(None)
-    ldf = ldf.set_index(time_anchor_column_name)
-    ldf.index.name = 'index'
-    lds = ldf[count_column_name].resample('D').sum()
-    return lds
-
-
-def create_rki_df(in_df, state=None, county=None, time_anchor_column_name='Meldedatum'):
-    lds_confirmed = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlFall')
-    lds_recovered = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlGenesen')
-    lds_death = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlTodesfall')
-    ldf = pd.DataFrame()
-    ldf['confirmed'] = lds_confirmed.cumsum()
-    ldf['recovered'] = lds_recovered.cumsum()
-    ldf['death'] = lds_death.cumsum()
-
-    ldf['new_confirmed'] = lds_confirmed
-    ldf['new_recovered'] = lds_recovered
-    ldf['new_death'] = lds_death
-    return ldf
-
-def discrete_diff(in_da, first_value=np.nan):
-    in_da = np.array(in_da)
-    return np.concatenate([np.array([first_value]), in_da[1:] - in_da[:-1]])
-
 def fitExp(t, a, b):
     return a * np.exp(b * t)
 
@@ -1256,7 +1397,17 @@ def fitSigAsymmetricDerivative(t, a, b1, b2, c):
     return fitSigDerivative(t, a, b, c)
 
 def fitSigExt(t, a, b, c, n):
-    return fitSig(t,a,b,c) + n*np.log(1+np.exp(b*t+c))
+    exponent = b*t+c
+
+    component1 = fitSig(t,a,b,c)
+
+    component2 = np.zeros_like(exponent)
+    selector = exponent > 20.0
+    component2[selector] = exponent[selector]
+    component2[~selector] = np.log(1 + np.exp(exponent[~selector]))
+    component2 = n * component2
+
+    return component1 + component2
 
 def fitSigExtDerivative(t, a, b, c, n):
     s=fitSig(t,1,b,c)
@@ -1325,8 +1476,12 @@ class FitResult():
         return self.__str__()
 
 def curve_fit(fitFunc, x, y, p0, label):
-    popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y,  p0)
-    seor = math.sqrt(sum((y - fitFunc(x, *(popt))) ** 2) / (len(x) - len(popt)))
+    try:
+        popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y,  p0)
+        seor = math.sqrt(sum((y - fitFunc(x, *(popt))) ** 2) / (len(x) - len(popt)))
+    except:
+        popt, pcov = None, None
+        seor = np.inf
     return FitResult(fitFunc, seor, popt, pcov, label)
 
 def curve_fit_minimize(fitFunc, x, y, p0, label, bounds=None):
@@ -1373,11 +1528,11 @@ class CurveFitWithConstraints(CurveFit):
 
     def fit_(self, fitFunc, ytarget, p0):
         f1 = curve_fit(fitFunc, self.x, ytarget, p0, self.label)
-        if not self.check_constraints_ok(f1):
+        if f1.seor == np.inf or not self.check_constraints_ok(f1):
             f1.seor = np.inf
 
         f2 = curve_fit_minimize(fitFunc, self.x, ytarget, p0, self.label)
-        if not self.check_constraints_ok(f2):
+        if f2.seor == np.inf or not self.check_constraints_ok(f2):
             f2 = curve_fit_minimize(fitFunc, self.x, ytarget, p0, self.label, bounds=self.bounds)
 
         if f1.seor < f2.seor:
@@ -1494,7 +1649,7 @@ class FitSigExtAsymmetric(CurveFitWithConstraints):
         self.lower_b1 = 0.0001
         self.lower_b2 = 0.0001
         self.lower_n = 1.0
-        super().__init__(x, y, dy, p0, 'sigmoid+asymmetric', ((self.lower_a, None), (self.lower_b1, None), (self.lower_b2, None), (None, None), (self.lower_n, None)))
+        super().__init__(x, y, dy, p0, 'sigmoid+asymmetric+linear', ((self.lower_a, None), (self.lower_b1, None), (self.lower_b2, None), (None, None), (self.lower_n, None)))
 
     def check_constraints_ok(self, f):
         return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b1 or f.popt[2] < self.lower_b2 or f.popt[4] < self.lower_n)
@@ -1507,3 +1662,125 @@ class FitSigExtAsymmetric(CurveFitWithConstraints):
     def fit2(self):
         self.f_integral = self.fit_(fitSigExtAsymmetric, self.y, self.f_derivative.popt)
         return self
+
+
+def discrete_diff(in_da, first_value=np.nan):
+    in_da = np.array(in_da)
+    return np.concatenate([np.array([first_value]), in_da[1:] - in_da[:-1]])
+
+def discrete_division(in_da, first_value=np.nan):
+    in_da = np.array(in_da)
+    return np.concatenate([np.array([first_value]), in_da[1:] / in_da[:-1]])
+
+
+rki_df_url   = 'https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data'
+rki_data_df = None
+def get_rki_data():
+    global rki_data_df
+
+    if rki_data_df is not None:
+        return rki_data_df
+
+    rki_data_df = pd.read_csv('https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data')
+    return rki_data_df
+
+def get_rki_df(state=None, county=None, time_anchor_column_name='Meldedatum'):
+    ldf = get_rki_data()
+    return create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name)
+
+def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall'):
+    ldf = in_df.copy()
+    if state is not None:
+        ldf = ldf[ldf['Bundesland'] == state].copy()
+    if county is not None:
+        ldf = ldf[ldf['Landkreis'] == county].copy()
+    ldf[time_anchor_column_name] = pd.to_datetime(ldf[time_anchor_column_name]).dt.tz_localize(None)
+    ldf = ldf.set_index(time_anchor_column_name)
+    ldf.index.name = 'index'
+    lds = ldf[count_column_name].resample('D').sum()
+    return lds
+
+
+def create_rki_df(in_df, state=None, county=None, time_anchor_column_name='Meldedatum'):
+    lds_confirmed = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlFall')
+    lds_recovered = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlGenesen')
+    lds_death = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlTodesfall')
+    ldf = pd.DataFrame()
+    ldf['confirmed'] = lds_confirmed.cumsum()
+    ldf['recovered'] = lds_recovered.cumsum()
+    ldf['death'] = lds_death.cumsum()
+
+    ldf['new_confirmed'] = lds_confirmed
+    ldf['new_recovered'] = lds_recovered
+    ldf['new_death'] = lds_death
+    return ldf
+
+italy_df_url   = 'https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-andamento-nazionale/dpc-covid19-ita-andamento-nazionale.csv'
+italy_data_df = None
+def get_italy_df():
+    global italy_data_df
+
+    if italy_data_df is not None:
+        return italy_data_df
+
+    fname = italy_df_url
+    alternative_italy_data = pd.read_csv(fname)
+    dates = pd.to_datetime(alternative_italy_data['data']).dt.date
+    alternative_italy_data = alternative_italy_data.rename(
+        columns={"totale_casi": "confirmed", "deceduti": "death", "dimessi_guariti": "recovered"})
+    alternative_italy_data = alternative_italy_data[['confirmed', 'recovered', 'death']].copy()
+    for property in ['confirmed', 'recovered', 'death']:
+        diff = alternative_italy_data[property].values[1:] - alternative_italy_data[property].values[:-1]
+        alternative_italy_data['new_' + property] = np.concatenate([np.array([0]), diff])
+    alternative_italy_data.index = dates
+    italy_data_df = alternative_italy_data
+    return italy_data_df
+
+spain_df_url   = 'https://raw.githubusercontent.com/datadista/datasets/master/COVID%2019/nacional_covid19.csv'
+spain_data_df = None
+def get_spain_df():
+    global spain_data_df
+
+    if spain_data_df is not None:
+        return spain_data_df
+
+    fname = spain_df_url
+    alternative_spain_data = pd.read_csv(fname)
+    dates = pd.to_datetime(alternative_spain_data['fecha']).dt.date
+    alternative_spain_data = alternative_spain_data.rename(columns={"casos": "confirmed", "fallecimientos": "death", "altas": "recovered"})
+    alternative_spain_data = alternative_spain_data[['confirmed', 'recovered', 'death']].copy()
+    for property in ['confirmed', 'recovered', 'death']:
+        diff = alternative_spain_data[property].values[1:] - alternative_spain_data[property].values[:-1]
+        alternative_spain_data['new_' + property] = np.concatenate([np.array([0]), diff])
+    alternative_spain_data.index = dates
+    alternative_spain_data.index.name = 'index'
+    alternative_spain_data = alternative_spain_data.fillna(0).astype(np.int)
+    dt = pd.to_datetime(datetime.date.today()) - pd.DateOffset(1)
+    spain_data_df = alternative_spain_data.loc[:dt]
+    return spain_data_df
+
+france_df_url   = 'https://raw.githubusercontent.com/opencovid19-fr/data/master/dist/chiffres-cles.csv'
+france_data_df = None
+def get_france_df():
+    global france_data_df
+
+    if france_data_df is not None:
+        return france_data_df
+
+    fname = france_df_url
+    alternative_france_data = pd.read_csv(fname)
+    alternative_france_data = alternative_france_data[(alternative_france_data['granularite'] == 'pays') & (alternative_france_data['source_type'] == 'ministere-sante')]
+    dates = pd.to_datetime(alternative_france_data['date']).dt.date
+    alternative_france_data = alternative_france_data.rename(columns={"cas_confirmes": "confirmed", "deces": "death", "gueris": "recovered"})
+    alternative_france_data['death'] += alternative_france_data['deces_ehpad']
+    alternative_france_data = alternative_france_data[['confirmed', 'recovered', 'death']].copy()
+    for property in ['confirmed', 'recovered', 'death']:
+        diff = alternative_france_data[property].values[1:] - alternative_france_data[property].values[:-1]
+        alternative_france_data['new_' + property] = np.concatenate([np.array([0]), diff])
+    alternative_france_data.index = dates
+
+    dt = pd.to_datetime(datetime.date.today()) - pd.DateOffset(1)
+    france_data_df = alternative_france_data.loc[:dt]
+    return france_data_df
+
+
