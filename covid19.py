@@ -1715,6 +1715,31 @@ def create_rki_df(in_df, state=None, county=None, time_anchor_column_name='Melde
     ldf['new_death'] = lds_death
     return ldf
 
+austria_df_url = 'https://opendata.arcgis.com/datasets/123014e4ac74408b970dd1eb060f9cf0_3.csv'
+austria_data_df = None
+def get_austria_df():
+    global austria_data_df
+
+    if austria_data_df is not None:
+        return austria_data_df
+
+    fname = austria_df_url
+    alternative_austria_data = pd.read_csv(fname)
+    alternative_austria_data['datum'] = pd.to_datetime(pd.to_datetime(alternative_austria_data.datum).dt.date)
+    alternative_austria_data = alternative_austria_data[['datum', 'infizierte', 'genesene', 'verstorbene']].groupby(['datum']).sum()
+    alternative_austria_data = alternative_austria_data.rename(
+        columns={"infizierte": "confirmed", "verstorbene": "death", "genesene": "recovered"})
+
+    for property in ['confirmed', 'recovered', 'death']:
+        diff = alternative_austria_data[property].values[1:] - alternative_austria_data[property].values[:-1]
+        alternative_austria_data['new_' + property] = np.concatenate([np.array([0]), diff])
+    alternative_austria_data.index.name = 'index'
+    alternative_austria_data = alternative_austria_data.fillna(0).astype(np.int)
+    dt = pd.to_datetime(datetime.date.today()) - pd.DateOffset(1)
+    alternative_austria_data = alternative_austria_data.loc[:dt]
+    return alternative_austria_data
+
+
 italy_df_url   = 'https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-andamento-nazionale/dpc-covid19-ita-andamento-nazionale.csv'
 italy_data_df = None
 def get_italy_df():
