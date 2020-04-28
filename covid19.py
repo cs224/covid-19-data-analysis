@@ -1809,3 +1809,185 @@ def get_france_df():
     return france_data_df
 
 
+class FitCascade():
+
+    def __init__(self, total_cases_ds):
+        self.total_ds = pd.Series(total_cases_ds)
+        self.delta_ds = pd.Series(discrete_diff(total_cases_ds), index=self.total_ds.index)
+        self.total_ds = self.total_ds.iloc[1:]
+        self.delta_ds = self.delta_ds.iloc[1:]
+
+    def fit(self, first_date=None, init_add=0.0, delta_threshold=100.0, range_append_nr_entires=40):
+
+        # Only take the data as valid starting with first_date and prepend it with ramp up data.
+        df = pd.DataFrame()
+        df['confirmed']     = self.total_ds
+        df['new_confirmed'] = self.delta_ds
+        df['recovered']     = 0
+        df['new_recovered'] = 0
+        df['death']     = 0
+        df['new_death'] = 0
+        mortality_analysis = MortalityAnalysis('None', first_date=first_date, init_add=init_add, df = df)
+        if first_date is not None:
+            ldf = mortality_analysis.prepend_df[mortality_analysis.prepend_df.index >= first_date]
+        else:
+            ldf = mortality_analysis.prepend_df
+
+        ldf = ldf.rename(columns={"confirmed": "total", "new_confirmed": "delta"})
+        fit_df0 = ldf[['total', 'delta']].reset_index(drop=True)
+        # .reset_index(drop=True).reset_index(name='x')
+        fit_df0.index.name = 'x'
+        fit_df0 = fit_df0.reset_index().astype(np.float)
+        fit_df0.index = ldf.index
+        fit_df0['x'] = fit_df0['x'] + 1.0
+        self.fit_df0 = fit_df0
+
+        # Don't take the last two days for curve fitting
+        fit_df = fit_df0.iloc[:-2].copy()
+        self.fit_df = fit_df
+
+        max_value = np.max(fit_df.total)
+
+        f1 = FitExp(fit_df.x, fit_df.total, fit_df.delta, [10, 0.2])
+        try:
+            f1.fit().fit2()
+        except:
+            f1.f_integral.seor = np.inf
+            f1.f_derivative.seor = np.inf
+        self.f1 = f1
+        f2 = FitSig(fit_df.x, fit_df.total, fit_df.delta, [max_value * 3 / 2, 0.2, -10])
+        f2.fit().fit2()
+        self.f2 = f2
+
+        self.fit_               = None
+        self.fit_choices        = None
+        self.sorted_fit_choices = None
+
+        if f1.seor() < f2.seor():
+            self.fit_ = f1
+        else:
+            f3 = FitSigExt(fit_df.x, fit_df.total, fit_df.delta, [max_value * 3 / 2, 0.2, -10, 100])
+            f3.fit()
+            self.f3 = f3
+
+            f2_p0 = np.array([f2.f_derivative.popt[0], f2.f_derivative.popt[1], f2.f_derivative.popt[1], f2.f_derivative.popt[2]])
+            f4 = FitSigAsymmetric(fit_df.x, fit_df.total, fit_df.delta, f2_p0)
+            f4.fit()
+            self.f4 = f4
+
+            f3_p0 = np.array([f3.f_derivative.popt[0], f3.f_derivative.popt[1], f3.f_derivative.popt[1], f3.f_derivative.popt[2], f3.f_derivative.popt[3]])
+            f5 = FitSigExtAsymmetric(fit_df.x, fit_df.total, fit_df.delta, f3_p0)
+            f5.fit()
+            self.f5 = f5
+
+            fit_choices             = [f2, f3, f4, f5]
+            self.fit_choices        = fit_choices.copy()
+            sorted_fit_choices      = sorted(fit_choices, key=lambda x: x.seor())
+            self.sorted_fit_choices = sorted_fit_choices
+            self.fit_ = sorted_fit_choices[0]
+            self.fit_.fit2()
+
+
+        last_x = int(fit_df0.x.iloc[-1])
+        last_day = fit_df0.index[-1]
+        for i in range(1, range_append_nr_entires):
+            x = last_x + i
+            d = last_day + datetime.timedelta(days=i)
+            fit_df0.loc[d] = [x, np.nan, np.nan]
+
+        proj = self.fit_.f_integral.call(fit_df0.x)
+        fit_df0['fit'] = proj
+
+        proj = self.fit_.f_integral.call(fit_df.x)
+        growthRate = round(proj[-1] / proj[-2] - 1, 3)
+        self.growthRate = growthRate
+
+        proj = self.fit_.f_derivative.call(fit_df0.x)
+        fit_df0['fit_diff'] = proj
+
+        max_above_100_date = fit_df0[fit_df0['fit_diff'] > delta_threshold * 1.0].index.max()
+        max_date = fit_df0.index.max()
+        if max_above_100_date + datetime.timedelta(days=2) < max_date:
+            max_above_100_date = max_above_100_date + datetime.timedelta(days=2)
+        else:
+            max_above_100_date = max_date
+        self.max_above_100_date = max_above_100_date
+        self.fit_df0 = fit_df0
+
+    def fit_overview(self):
+        return [item.f_derivative for item in self.fit_choices]
+
+    def plot(self, ax=None, axv_date=None, total_column_name='confirmed', delta_column_name='new_confirmed'):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        # https://stackoverflow.com/questions/26752464/how-do-i-align-gridlines-for-two-y-axis-scales-using-matplotlib
+        fit_column_name = total_column_name + '_fit'
+        diff_fit_column_name = delta_column_name + '_fit'
+        ldf = self.fit_df0.rename(columns={"total": total_column_name, "delta": delta_column_name, "fit": fit_column_name, "fit_diff": diff_fit_column_name})
+
+        ldf[[total_column_name]].plot(ax=ax, marker=mpl.path.Path.unit_circle(), markersize=5);
+        ldf[[fit_column_name]].plot(ax=ax);
+        # ax.set_ylim(-100,None)
+
+        if axv_date is not None:
+            ax.axvline(axv_date)
+
+        ax2 = ax.twinx()
+        ldf[[diff_fit_column_name]].plot(ax=ax2);
+        ldf[[delta_column_name]].reset_index().plot.scatter(ax=ax2, x = 'index', y = delta_column_name, c='limegreen')
+        # ax2.set_ylim(-100,None)
+
+        # l = len(ax.get_yticks())
+        # a1 = ax.get_yticks()[0]
+        # e1 = ax.get_yticks()[-1]
+        # a2 = ax2.get_yticks()[0]
+        # e2 = ax2.get_yticks()[-1]
+        # ax.set_yticks(np.linspace(a1, e1, l));
+        # ax2.set_yticks(np.linspace(a2, e2, l));
+        ax2.grid(None)
+        itm = ldf.loc[self.max_above_100_date]
+        print('{}; growth-rate: {}, date:{}, projected value: {}'.format(self.fit_, self.growthRate, itm.name, itm[diff_fit_column_name]))
+
+
+class DeathrateByShiftingAndScaleing():
+
+    def __init__(self, fc_confirmed, fc_death):
+        self.fc_confirmed = fc_confirmed
+        self.fc_death     = fc_death
+
+    def fit(self):
+        x = self.fc_death.fit_df['x'].values
+        extDayCount = 7
+        t = np.linspace(x[0], x[-1] + extDayCount, 5 * (len(x) + extDayCount))
+        death_predicted = self.fc_death.fit_.predict_dy(t)
+
+        def fitdf(t, a, b):
+            return a * self.fc_confirmed.fit_.predict_dy(t - b)
+
+        popt, pcov = scipy.optimize.curve_fit(fitdf, t, death_predicted, [0.05, 10])
+        if popt[1] < 0:
+            raise Exception('deaths must come after cases, ignore nonsensical fits')
+
+        self.delay_between_new_cases_and_death_popt         = popt
+        self.delay_between_new_cases_and_death_cfr_estimate = popt[0]
+        self.delay_between_new_cases_and_death_timeshift    = popt[1]
+
+    def plot(self, ax=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        t = self.fc_death.fit_df0['x'].values
+        death_predicted = self.fc_death.fit_.predict_dy(t)
+        self.death_predicted = death_predicted
+        death_from_confirmed = self.delay_between_new_cases_and_death_cfr_estimate * self.fc_confirmed.fit_.predict_dy(t - self.delay_between_new_cases_and_death_timeshift)
+        self.death_from_confirmed = death_from_confirmed
+
+        ldf = pd.DataFrame(index=self.fc_death.fit_df0.index)
+        ldf['death_curve'] = death_predicted
+        ldf['shifted_and_scaled_confirmed_curve'] = death_from_confirmed
+        ldf.plot(ax=ax);
+
+
