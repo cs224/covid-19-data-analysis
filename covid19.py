@@ -1681,12 +1681,18 @@ def get_rki_data():
     if rki_data_df is not None:
         return rki_data_df
 
-    rki_data_df = pd.read_csv('https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data')
+    rki_data_df = pd.read_csv(rki_df_url, encoding = "ISO-8859-1")
     return rki_data_df
 
 def get_rki_df(state=None, county=None, time_anchor_column_name='Meldedatum'):
     ldf = get_rki_data()
-    return create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name)
+    ldf = create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name)
+    if state is None and county is None and time_anchor_column_name == 'Meldedatum':
+        ldf_ = get_cases_by_region(region='Germany')
+        ldf_ = ldf_.reindex(ldf.index)
+        ldf['death'] = ldf_['death']
+        ldf['new_death'] = ldf_['new_death']
+    return ldf
 
 def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall'):
     ldf = in_df.copy()
@@ -1951,43 +1957,228 @@ class FitCascade():
         print('{}; growth-rate: {}, date:{}, projected value: {}'.format(self.fit_, self.growthRate, itm.name, itm[diff_fit_column_name]))
 
 
-class DeathrateByShiftingAndScaleing():
+class LeadLagByShiftAndScale1():
 
-    def __init__(self, fc_confirmed, fc_death):
-        self.fc_confirmed = fc_confirmed
-        self.fc_death     = fc_death
+    def __init__(self, fc_leader, fc_follower):
+        self.fc_leader   = fc_leader
+        self.fc_follower = fc_follower
 
     def fit(self):
-        x = self.fc_death.fit_df['x'].values
+        x = self.fc_follower.fit_df['x'].values
         extDayCount = 7
         t = np.linspace(x[0], x[-1] + extDayCount, 5 * (len(x) + extDayCount))
-        death_predicted = self.fc_death.fit_.predict_dy(t)
+        death_predicted = self.fc_follower.fit_.predict_dy(t)
 
         def fitdf(t, a, b):
-            return a * self.fc_confirmed.fit_.predict_dy(t - b)
+            return a * self.fc_leader.fit_.predict_dy(t - b)
 
         popt, pcov = scipy.optimize.curve_fit(fitdf, t, death_predicted, [0.05, 10])
         if popt[1] < 0:
             raise Exception('deaths must come after cases, ignore nonsensical fits')
 
-        self.delay_between_new_cases_and_death_popt         = popt
-        self.delay_between_new_cases_and_death_cfr_estimate = popt[0]
-        self.delay_between_new_cases_and_death_timeshift    = popt[1]
+        self.shift_and_scale_popt = popt
+        self.scale = popt[0]
+        self.shift = popt[1]
 
     def plot(self, ax=None):
         if ax is None:
             fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
             ax = plt.subplot(1,1,1)
 
-        t = self.fc_death.fit_df0['x'].values
-        death_predicted = self.fc_death.fit_.predict_dy(t)
+        t = self.fc_follower.fit_df0['x'].values
+        death_predicted = self.fc_follower.fit_.predict_dy(t)
         self.death_predicted = death_predicted
-        death_from_confirmed = self.delay_between_new_cases_and_death_cfr_estimate * self.fc_confirmed.fit_.predict_dy(t - self.delay_between_new_cases_and_death_timeshift)
+        death_from_confirmed = self.scale * self.fc_leader.fit_.predict_dy(t - self.shift)
         self.death_from_confirmed = death_from_confirmed
 
-        ldf = pd.DataFrame(index=self.fc_death.fit_df0.index)
+        ldf = pd.DataFrame(index=self.fc_follower.fit_df0.index)
         ldf['death_curve'] = death_predicted
         ldf['shifted_and_scaled_confirmed_curve'] = death_from_confirmed
         ldf.plot(ax=ax);
+
+
+class LeadLagByShiftAndScale2():
+
+    def __init__(self, leader_total_cases_ds, follower_total_cases_ds, fc_leader=None):
+        self.leader_total_cases_ds = leader_total_cases_ds
+        if fc_leader is not None:
+            self.fc_leader = fc_leader
+        else:
+            self.fc_leader = FitCascade(leader_total_cases_ds)
+            self.fc_leader.fit()
+
+        if len(self.fc_leader.total_ds) != len(follower_total_cases_ds) - 1:
+            raise Exception('Leader and follower data series do not match in length')
+
+        self.fc_follower = None
+        self.follower_total_cases_ds = pd.Series(follower_total_cases_ds)
+        self.follower_delta_cases_ds = pd.Series(discrete_diff(follower_total_cases_ds), index=self.follower_total_cases_ds.index)
+        self.follower_total_cases_ds = self.follower_total_cases_ds.iloc[1:]
+        self.follower_delta_cases_ds = self.follower_delta_cases_ds.iloc[1:]
+
+
+    def fit(self):
+        ldf = self.fc_leader.fit_df.reindex(self.follower_delta_cases_ds.index)
+        x = ldf['x'].values
+        ldf = pd.DataFrame(dict(x=x,y=self.follower_delta_cases_ds), index=self.follower_delta_cases_ds.index)
+        ldf = ldf[~(pd.isnull(ldf.x) | pd.isnull(ldf.y))]
+        self.fit_df = ldf
+
+        fitFunc = self.fc_leader.fit_.f_derivative.fitFunc
+        p0      = self.fc_leader.fit_.f_derivative.popt.copy()
+        label   = self.fc_leader.fit_.f_derivative.label
+
+        follower_fit_result = curve_fit(fitFunc, ldf.x, ldf.y, p0, label)
+        self.follower_fit_result = follower_fit_result
+
+
+        extDayCount = 7
+        t = np.linspace(ldf.x[0], ldf.x[-1] + extDayCount, 5 * (len(ldf) + extDayCount))
+        self.t = t
+        lda_follower_fit = follower_fit_result.fitFunc(t, *follower_fit_result.popt)
+        self.lda_follower_fit = lda_follower_fit
+
+
+        def fitdf(t, a, b):
+            return a * self.fc_leader.fit_.predict_dy(t - b)
+
+        popt, pcov = scipy.optimize.curve_fit(fitdf, t, lda_follower_fit, [0.05, 10])
+        if popt[1] < 0:
+            raise Exception('deaths must come after cases, ignore nonsensical fits')
+
+        self.shift_and_scale_popt         = popt
+        self.scale = popt[0]
+        self.shift    = popt[1]
+
+    def plot(self, ax=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        t = self.fc_leader.fit_df0['x'].values
+        lda_follower_fit             = self.follower_fit_result.fitFunc(t, *self.follower_fit_result.popt)
+        lda_transformed_leader_fit   = self.scale * self.fc_leader.fit_.predict_dy(t - self.shift)
+
+        ldf = pd.DataFrame(index=self.fc_leader.fit_df0.index)
+        ldf['follower_fit']                  = lda_follower_fit
+        ldf['shifted_and_scaled_leader_fit'] = lda_transformed_leader_fit
+        self.fit_df0 = ldf
+
+        ldf.plot(ax=ax)
+        self.fit_df[['y']].reset_index().plot.scatter(ax=ax, x='index', y='y', c='blue') # , c='limegreen'
+
+        ldf = self.fc_leader.fit_df0[['x', 'delta']].copy()
+        for index, row in ldf.iterrows():
+            ldf.loc[index,'x'] = ldf.index[0] + pd.DateOffset(days=(row['x'] + self.shift - 1.0))
+        ldf['delta'] = self.scale * ldf['delta']
+        self.scaled_and_shifted_leader_df = ldf
+        ldf.plot.scatter(ax=ax, x='x', y='delta', c='orange') #,, c=np.array([['orange']])
+
+
+
+class LeadLagByShiftAndScale3():
+
+    def __init__(self, leader_total_cases_ds, follower_total_cases_ds, first_date=None):
+        self.leader_total_cases_ds = pd.Series(leader_total_cases_ds)
+        self.leader_delta_cases_ds = pd.Series(discrete_diff(leader_total_cases_ds), index=self.leader_total_cases_ds.index)
+        self.leader_total_cases_ds = self.leader_total_cases_ds.iloc[1:]
+        self.leader_delta_cases_ds = self.leader_delta_cases_ds.iloc[1:]
+
+        self.follower_total_cases_ds = pd.Series(follower_total_cases_ds)
+        self.follower_delta_cases_ds = pd.Series(discrete_diff(follower_total_cases_ds), index=self.follower_total_cases_ds.index)
+        self.follower_total_cases_ds = self.follower_total_cases_ds.iloc[1:]
+        self.follower_delta_cases_ds = self.follower_delta_cases_ds.iloc[1:]
+
+        self.first_date = first_date
+
+        if (len(self.leader_total_cases_ds) != len(self.leader_delta_cases_ds)) or \
+                (len(self.leader_total_cases_ds) != len(self.follower_total_cases_ds)) or \
+                (len(self.leader_total_cases_ds) != len(self.follower_delta_cases_ds)):
+            raise Exception('Data series lengths do not match!')
+
+    def create_fit_df(self, ds_total, ds_delta):
+
+        fit_df0 = self.df_x.reindex(ds_total.index)
+        fit_df0['total'] = ds_total.values
+        fit_df0['delta'] = ds_delta.values
+        if self.first_date is not None:
+            fit_df0 = fit_df0[fit_df0.index >= self.first_date].copy()
+
+
+        # Don't take the last two days for curve fitting
+        fit_df = fit_df0.iloc[:-2].copy()
+        return fit_df0, fit_df
+
+    def fit(self):
+
+        i1 = self.leader_total_cases_ds.index
+        i2 = self.follower_total_cases_ds.index
+
+        min_date = np.minimum(i1[0], i2[0])
+        max_date = np.maximum(i1[-1], i2[-1])
+        dr = pd.date_range(min_date, max_date)
+
+        ldf_x = pd.DataFrame(dict(x=np.arange(len(dr))+1.0), index= dr)
+        self.df_x = ldf_x
+
+        self.leader_fit_df0, self.leader_fit_df = self.create_fit_df(self.leader_total_cases_ds, self.leader_delta_cases_ds)
+        self.follower_fit_df0, self.follower_fit_df = self.create_fit_df(self.follower_total_cases_ds, self.follower_delta_cases_ds)
+
+        if self.first_date is not None:
+            self.df_x = self.df_x[self.df_x.index >= self.first_date].copy()
+
+        max_value = np.max(self.leader_fit_df['total'])
+        fit_sig_leader = FitSig(self.leader_fit_df.x, self.leader_fit_df['total'], self.leader_fit_df['delta'], [max_value * 3 / 2, 0.2, -10])
+        fit_sig_leader.fit()
+        self.fit_sig_leader = fit_sig_leader
+
+        max_value = np.max(self.follower_fit_df['total'])
+        fit_sig_follower = FitSig(self.follower_fit_df.x, self.follower_fit_df['total'], self.follower_fit_df['delta'], [max_value * 3 / 2, 0.2, -10])
+        fit_sig_follower.fit()
+        self.fit_sig_follower = fit_sig_follower
+
+        extDayCount = 7
+        t = np.linspace(self.df_x.x[0], self.df_x.x[-1] + extDayCount, 5 * (len(self.df_x) + extDayCount))
+        self.t = t
+        lda_follower_fit = fit_sig_follower.predict_dy(t)
+        self.lda_follower_fit = lda_follower_fit
+
+
+        def fitdf(t, a, b):
+            return a * fit_sig_leader.predict_dy(t - b)
+
+        popt, pcov = scipy.optimize.curve_fit(fitdf, t, lda_follower_fit, [0.05, 10])
+        if popt[1] < 0:
+            raise Exception('deaths must come after cases, ignore nonsensical fits')
+
+        self.shift_and_scale_popt         = popt
+        self.scale = popt[0]
+        self.shift    = popt[1]
+
+    def plot(self, ax=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        t = self.df_x.x
+        lda_follower_fit             = self.fit_sig_follower.predict_dy(t)
+        lda_transformed_leader_fit   = self.scale * self.fit_sig_leader.predict_dy(t - self.shift)
+
+        ldf = pd.DataFrame(index=self.leader_total_cases_ds.index)
+        ldf['follower_fit']                  = lda_follower_fit
+        ldf['shifted_and_scaled_leader_fit'] = lda_transformed_leader_fit
+        self.fit_df0 = ldf
+
+        ldf.plot(ax=ax)
+        self.follower_fit_df[['delta']].reset_index().plot.scatter(ax=ax, x='index', y='delta', c='blue') # , c='limegreen'
+
+        ldf = self.leader_fit_df[['x', 'delta']].copy()
+        x0 = ldf.x[0]
+        for index, row in ldf.iterrows():
+            ldf.loc[index,'x'] = ldf.index[0] + pd.DateOffset(days=(row['x'] + self.shift - x0))
+
+        ldf['delta'] = self.scale * ldf['delta']
+        self.scaled_and_shifted_leader_df = ldf
+        ldf.plot.scatter(ax=ax, x='x', y='delta', c='orange') #,, c=np.array([['orange']])
 
 
