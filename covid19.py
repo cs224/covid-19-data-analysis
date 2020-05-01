@@ -852,13 +852,14 @@ class MortalityAnalysis():
     #             raise Exception('MortalityAnalysis: the death in df_lifelines_individual do not match the ones in prepend_df')
 
     def calculate_delay_between_new_cases_and_death(self):
-        ldf = self.prepend_df.copy()
         first_date = self.first_date
         if first_date is None:
             first_date = self.prepend_df.index[0]
         ldf = self.prepend_df[self.prepend_df.index >= first_date].copy()
+        self.ll_df = ldf
 
         ll = LeadLagByShiftAndScale3(ldf.confirmed, ldf.death)
+        self.ll = ll
         ll.fit()
 
         self.delay_between_new_cases_and_death_popt         = ll.shift_and_scale_popt
@@ -988,6 +989,21 @@ class MortalityAnalysis():
         # required_ventilator_capacity = delta_death_2 / proportion_of_ventilator_patient_dies
 
         return pd.DataFrame([[expected_death, today_death, delta_death, delta_death_2, delta_death_across_days, window_size, required_ventilator_capacity]], columns=['expected_death', 'today_death', 'delta_death', 'expected_death_2', 'delta_death_across_days', 'delta_days', 'required_ventilator_capacity']).round(0)
+
+    def plot_infection_and_death_curves(self, ax=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        first_date = self.first_date
+        if first_date is None:
+            first_date = self.prepend_df.index[0]
+        ldf = self.prepend_df[self.prepend_df.index >= first_date].copy()
+
+        ll = LeadLagByShiftAndScale1(ldf.confirmed, ldf.death)
+        ll.fit()
+
+        ll.plot_lead_lag(ax=ax)
 
 US_states1 = [
     'District of Columbia',
@@ -1463,13 +1479,40 @@ class FitResult():
     def __repr__(self):
         return self.__str__()
 
-def curve_fit(fitFunc, x, y, p0, label):
+def curve_fit(fitFunc, x, y, p0, label, bounds=None):
     try:
-        popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y,  p0)
+
+        bad = False
+        popt = None
+        if bounds is not None:
+            try:
+                popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y, p0)
+            except:
+                warnings.warn('Exception in curve_fit 1')
+                popt = p0
+                bad = True
+        else:
+            popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y, p0)
+
+        if bounds is not None:
+            for i, b in enumerate(bounds):
+                if not (b[0] <= popt[i]  and popt[i] <= b[1]):
+                    bad = True
+                    break
+
+            if bad:
+                bl = [i[0] for i in bounds]
+                bu = [i[1] for i in bounds]
+                bounds_ = (bl, bu)
+                popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y, p0, bounds=bounds_)
+                popt, pcov = scipy.optimize.curve_fit(fitFunc, x, y, popt)
+
         seor = math.sqrt(sum((y - fitFunc(x, *(popt))) ** 2) / (len(x) - len(popt)))
-    except:
-        popt, pcov = None, None
+    except Exception as e:
+        warnings.warn('Exception in curve_fit: ' + str(e) + '/ {}'.format(popt))
+        pcov = None
         seor = np.inf
+
     return FitResult(fitFunc, seor, popt, pcov, label)
 
 def curve_fit_minimize(fitFunc, x, y, p0, label, bounds=None):
@@ -1551,12 +1594,15 @@ class FitSig(CurveFit):
         super().__init__(x, y, dy, p0, 'sigmoid')
         self.lower_a = 10.0
         self.lower_b = 0.0001
+        self.bounds = [(1000.0, np.inf), (0.01, np.inf), (-np.inf, -0.1)]
 
     def check_constraints_ok(self, f):
+        if f.popt is None:
+            return False
         return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b)
 
     def fit(self):
-        f = curve_fit(fitSigDerivative, self.x, self.dy, self.p0, self.label)
+        f = curve_fit(fitSigDerivative, self.x, self.dy, self.p0, self.label, bounds=self.bounds)
         if not self.check_constraints_ok(f):
             f.seor = np.inf
 
@@ -1566,7 +1612,7 @@ class FitSig(CurveFit):
         return self
 
     def fit2(self):
-        self.f_integral   = curve_fit(fitSig, self.x, self.y, self.f_derivative.popt, self.label)
+        self.f_integral   = curve_fit(fitSig, self.x, self.y, self.f_derivative.popt, self.label, bounds=self.bounds)
         return self
 
     def __str__(self):
@@ -1581,6 +1627,8 @@ class FitSigAsymmetric(CurveFitWithConstraints):
         super().__init__(x, y, dy, p0, 'sigmoid+asymmetric', ((self.lower_a, None), (self.lower_b1, None), (self.lower_b2, None), (None, None)))
 
     def check_constraints_ok(self, f):
+        if f.popt is None:
+            return False
         return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b1 or f.popt[2] < self.lower_b2)
 
     def fit(self):
@@ -1611,6 +1659,8 @@ class FitSigExt(CurveFit):
         self.lower_n = 1.0
 
     def check_constraints_ok(self, f):
+        if f.popt is None:
+            return False
         return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b or f.popt[3] < self.lower_n)
 
     def fit(self):
@@ -1640,6 +1690,8 @@ class FitSigExtAsymmetric(CurveFitWithConstraints):
         super().__init__(x, y, dy, p0, 'sigmoid+asymmetric+linear', ((self.lower_a, None), (self.lower_b1, None), (self.lower_b2, None), (None, None), (self.lower_n, None)))
 
     def check_constraints_ok(self, f):
+        if f.popt is None:
+            return False
         return not (f.popt[0] < self.lower_a or f.popt[1] < self.lower_b1 or f.popt[2] < self.lower_b2 or f.popt[4] < self.lower_n)
 
     def fit(self):
@@ -1672,10 +1724,10 @@ def get_rki_data():
     rki_data_df = pd.read_csv(rki_df_url)# , encoding = "ISO-8859-1"
     return rki_data_df
 
-def get_rki_df(state=None, county=None, time_anchor_column_name='Meldedatum'):
+def get_rki_df(state=None, county=None, time_anchor_column_name='Refdatum'): #, time_anchor_column_name='Meldedatum'
     ldf = get_rki_data()
     ldf = create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name)
-    if state is None and county is None and time_anchor_column_name == 'Meldedatum':
+    if state is None and county is None: # and time_anchor_column_name == 'Meldedatum'
         ldf_ = get_cases_by_region(region='Germany')
         ldf_ = ldf_.reindex(ldf.index)
         ldf['death'] = ldf_['death']
@@ -1771,7 +1823,7 @@ def get_spain_df():
     fname = spain_df_url
     alternative_spain_data = pd.read_csv(fname)
     dates = pd.to_datetime(pd.to_datetime(alternative_spain_data['fecha']).dt.date)
-    alternative_spain_data = alternative_spain_data.rename(columns={"casos": "confirmed", "fallecimientos": "death", "altas": "recovered"})
+    alternative_spain_data = alternative_spain_data.rename(columns={"casos_total": "confirmed", "fallecimientos": "death", "altas": "recovered"})
     alternative_spain_data = alternative_spain_data[['confirmed', 'recovered', 'death']].copy()
     for property in ['confirmed', 'recovered', 'death']:
         diff = alternative_spain_data[property].values[1:] - alternative_spain_data[property].values[:-1]
@@ -1789,8 +1841,8 @@ france_data_df = None
 def get_france_df():
     global france_data_df
 
-    if france_data_df is not None:
-        return france_data_df
+    # if france_data_df is not None:
+    #     return france_data_df
 
     fname = france_df_url
     alternative_france_data = pd.read_csv(fname)
@@ -1805,6 +1857,7 @@ def get_france_df():
     alternative_france_data.index = dates
 
     dt = pd.to_datetime(datetime.date.today()) - pd.DateOffset(1)
+    alternative_france_data = alternative_france_data[~pd.isnull(alternative_france_data.confirmed)]
     alternative_france_data = alternative_france_data.fillna(0.0).astype(np.int)
     france_data_df = alternative_france_data.loc[:dt]
     return france_data_df
@@ -1843,15 +1896,19 @@ class FitCascade():
             fit_df0 = fit_df0.reset_index().astype(np.float)
             fit_df0.index = ldf.index
             fit_df0['x'] = fit_df0['x'] + 1.0
-            self.fit_df0 = fit_df0
 
             # Don't take the last two days for curve fitting
             fit_df = fit_df0.iloc[:-2].copy()
-            self.fit_df = fit_df
         else:
             fit_df = self.fit_df
             fit_df0 = fit_df
-            self.fit_df0 = fit_df0
+
+        # min = fit_df0.x.min() - 1
+        # fit_df0['x'] = fit_df0['x']- min
+        # fit_df['x'] = fit_df['x'] - min
+
+        self.fit_df = fit_df
+        self.fit_df0 = fit_df0
 
         max_value = np.max(fit_df.total)
 
@@ -1862,7 +1919,8 @@ class FitCascade():
             f1.f_integral.seor = np.inf
             f1.f_derivative.seor = np.inf
         self.f1 = f1
-        f2 = FitSig(fit_df.x, fit_df.total, fit_df.delta, [max_value * 3 / 2, 0.2, -10])
+        f2_popt = [max_value * 3 / 2, 0.2, -10]
+        f2 = FitSig(fit_df.x, fit_df.total, fit_df.delta, f2_popt)
         f2.fit().fit2()
         self.f2 = f2
 
@@ -1870,29 +1928,37 @@ class FitCascade():
         self.fit_choices        = None
         self.sorted_fit_choices = None
 
-        if f1.seor() < f2.seor():
-            self.fit_ = f1
+        # if f1.seor() < f2.seor():
+        #     self.fit_ = f1
+        # else:
+
+        f3 = FitSigExt(fit_df.x, fit_df.total, fit_df.delta, [max_value * 3 / 2, 0.2, -10, 100])
+        f3.fit()
+        self.f3 = f3
+
+
+        if f2.seor() == np.inf:
+            f2_p0 = [max_value * 3 / 2, 0.2, 0.2, -10]
         else:
-            f3 = FitSigExt(fit_df.x, fit_df.total, fit_df.delta, [max_value * 3 / 2, 0.2, -10, 100])
-            f3.fit()
-            self.f3 = f3
-
             f2_p0 = np.array([f2.f_derivative.popt[0], f2.f_derivative.popt[1], f2.f_derivative.popt[1], f2.f_derivative.popt[2]])
-            f4 = FitSigAsymmetric(fit_df.x, fit_df.total, fit_df.delta, f2_p0)
-            f4.fit()
-            self.f4 = f4
+        f4 = FitSigAsymmetric(fit_df.x, fit_df.total, fit_df.delta, f2_p0)
+        f4.fit()
+        self.f4 = f4
 
+        if f3.seor() == np.inf:
+            f3_p0 = [max_value * 3 / 2, 0.2, 0.2, -10, 100]
+        else:
             f3_p0 = np.array([f3.f_derivative.popt[0], f3.f_derivative.popt[1], f3.f_derivative.popt[1], f3.f_derivative.popt[2], f3.f_derivative.popt[3]])
-            f5 = FitSigExtAsymmetric(fit_df.x, fit_df.total, fit_df.delta, f3_p0)
-            f5.fit()
-            self.f5 = f5
+        f5 = FitSigExtAsymmetric(fit_df.x, fit_df.total, fit_df.delta, f3_p0)
+        f5.fit()
+        self.f5 = f5
 
-            fit_choices             = [f2, f3, f4, f5]
-            self.fit_choices        = fit_choices.copy()
-            sorted_fit_choices      = sorted(fit_choices, key=lambda x: x.seor())
-            self.sorted_fit_choices = sorted_fit_choices
-            self.fit_ = sorted_fit_choices[0]
-            self.fit_.fit2()
+        fit_choices             = [f1, f2, f3, f4, f5]
+        self.fit_choices        = fit_choices.copy()
+        sorted_fit_choices      = sorted(fit_choices, key=lambda x: x.seor())
+        self.sorted_fit_choices = sorted_fit_choices
+        self.fit_ = sorted_fit_choices[0]
+        self.fit_.fit2()
 
 
         last_x = int(fit_df0.x.iloc[-1])
@@ -2059,6 +2125,20 @@ class LeadLagByShiftAndScaleBase():
         ldf.plot.scatter(ax=ax, x='x', y='delta', c='orange') #,, c=np.array([['orange']])
 
 
+    def plot_lead_lag(self, ax=None):
+        if ax is None:
+            fig = plt.figure(figsize=(32,8), dpi=80, facecolor='w', edgecolor='k')
+            ax = plt.subplot(1,1,1)
+
+        self.leader_fit_df0.plot.scatter(ax=ax, x='x', y='delta', c='lightblue')
+        ax.plot(self.leader_fit_df0.x, self.fn_leader_predict_dy(self.leader_fit_df0.x), c='lightblue')
+
+        ax2 = ax.twinx()
+        self.follower_fit_df0.plot.scatter(ax=ax2, x='x', y='delta', c='darkblue')
+        ax2.plot(self.follower_fit_df0.x, self.fn_follower_predict_dy(self.follower_fit_df0.x), c='darkblue')
+        ax2.grid(None)
+
+
 class LeadLagByShiftAndScale1(LeadLagByShiftAndScaleBase):
 
     def __init__(self, leader_total_cases_ds, follower_total_cases_ds, first_date=None):
@@ -2067,10 +2147,10 @@ class LeadLagByShiftAndScale1(LeadLagByShiftAndScaleBase):
     def fit(self):
 
         self.fc_leader = FitCascade(self.leader_fit_df.total, fit_df=self.leader_fit_df)
-        self.fc_leader.fit()
+        self.fc_leader.fit(first_date=self.first_date)
 
         self.fc_follower = FitCascade(self.follower_fit_df.total, fit_df=self.follower_fit_df)
-        self.fc_follower.fit()
+        self.fc_follower.fit(first_date=self.first_date)
 
         self.shift_and_scale(self.fc_leader.fit_.predict_dy, self.fc_follower.fit_.predict_dy)
 
@@ -2083,7 +2163,7 @@ class LeadLagByShiftAndScale2(LeadLagByShiftAndScaleBase):
     def fit(self):
 
         self.fc_leader = FitCascade(self.leader_fit_df.total, fit_df=self.leader_fit_df)
-        self.fc_leader.fit()
+        self.fc_leader.fit(first_date=self.first_date)
 
         fitFunc = self.fc_leader.fit_.f_derivative.fitFunc
         p0      = self.fc_leader.fit_.f_derivative.popt.copy()
