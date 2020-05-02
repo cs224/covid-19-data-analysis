@@ -23,6 +23,7 @@ import simdkalman
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 import warnings
+import re
 
 # fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_19-covid-Confirmed.csv'
 fname = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv'
@@ -105,7 +106,11 @@ columns = time_series_19_covid_confirmed.columns[4:]
 dcolumns = [pd.to_datetime(dt) for dt in columns]
 columns[:3],dcolumns[-3:]
 
-override_xlsx_name = 'covid-manual-excel.xlsx'
+p = os.path.realpath('.')
+m = re.search('(^.*covid-19-data-analysis).*', p)
+p = m.group(1)
+
+override_xlsx_name = p + '/covid-manual-excel.xlsx'
 override_xlsx = pd.ExcelFile(override_xlsx_name)
 
 def get_cases_by_region_override(region='Germany'):
