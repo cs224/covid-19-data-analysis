@@ -838,7 +838,7 @@ class MortalityAnalysis():
     def fit1(self):
         self.calculate_delay_between_new_cases_and_death()
         delay_between_new_cases_and_death_timeshift = max(self.delay_between_new_cases_and_death_timeshift, 0.0)
-        loc = max(delay_between_new_cases_and_death_timeshift - (gamma_mean - gamma_loc), 0.0)
+        loc = min(max(delay_between_new_cases_and_death_timeshift - (gamma_mean - gamma_loc), 0.0), gamma_loc)
         if self.gamma_distribution_parameters is None:
             self.gamma_distribution_parameters = dict(loc=loc, k=gamma_k, theta=gamme_theta)
         else:
