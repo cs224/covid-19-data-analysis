@@ -268,7 +268,7 @@ class CasesByRegion():
             f1.f_integral.seor = np.inf
             f1.f_derivative.seor = np.inf
         self.f1 = f1
-        f2 = FitSig(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10])
+        f2 = FitSig(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.1, -10])
         f2.fit().fit2()
         self.f2 = f2
 
@@ -285,7 +285,7 @@ class CasesByRegion():
             # f2 = FitSig   (fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10])
             # f2.fit()
 
-            f3 = FitSigExt(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10, 100])
+            f3 = FitSigExt(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.1, -10, 100])
             f3.fit()
             self.f3 = f3
 
@@ -1729,10 +1729,10 @@ def get_rki_data():
     rki_data_df = pd.read_csv(rki_df_url)# , encoding = "ISO-8859-1"
     return rki_data_df
 
-def get_rki_df(state=None, county=None, time_anchor_column_name='Refdatum'): #, time_anchor_column_name='Meldedatum'
+def get_rki_df(state=None, county=None, time_anchor_column_name='Refdatum', replace_death=True): #, time_anchor_column_name='Meldedatum'
     ldf = get_rki_data()
     ldf = create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name)
-    if state is None and county is None: # and time_anchor_column_name == 'Meldedatum'
+    if state is None and county is None and replace_death: # and time_anchor_column_name == 'Meldedatum'
         ldf_ = get_cases_by_region(region='Germany')
         ldf_ = ldf_.reindex(ldf.index)
         ldf['death'] = ldf_['death']
