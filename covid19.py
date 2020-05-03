@@ -1745,9 +1745,9 @@ def get_rki_df(state=None, county=None, time_anchor_column_name='Refdatum', repl
 def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall'):
     ldf = in_df.copy()
     if state is not None:
-        ldf = ldf[ldf['Bundesland'] == state].copy()
+        ldf = ldf[ldf['Bundesland'].str.contains(state)].copy()
     if county is not None:
-        ldf = ldf[ldf['Landkreis'] == county].copy()
+        ldf = ldf[ldf['Landkreis'].str.contains(county)].copy()
     ldf[time_anchor_column_name] = pd.to_datetime(ldf[time_anchor_column_name]).dt.tz_localize(None)
     ldf = ldf.set_index(time_anchor_column_name)
     ldf.index.name = 'index'
