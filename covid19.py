@@ -1718,6 +1718,8 @@ def discrete_division(in_da, first_value=np.nan):
     return np.concatenate([np.array([first_value]), in_da[1:] / in_da[:-1]])
 
 
+# https://opendata.arcgis.com/datasets/dd4580c810204019a7b8eb3e0b329dd6_0.csv
+# https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data
 rki_df_url   = 'https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data'
 rki_data_df = None
 def get_rki_data():
