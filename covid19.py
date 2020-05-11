@@ -1733,7 +1733,9 @@ def get_rki_data():
 
 def get_rki_df(state=None, county=None, time_anchor_column_name='Refdatum', replace_death=True): #, time_anchor_column_name='Meldedatum'
     ldf = get_rki_data()
-    ldf = create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name)
+    last_date = pd.to_datetime(ldf['Refdatum'].max()).tz_localize(None)
+    # print(last_date)
+    ldf = create_rki_df(ldf, state=state, county=county, time_anchor_column_name=time_anchor_column_name, last_date=last_date)
     if state is None and county is None and replace_death: # and time_anchor_column_name == 'Meldedatum'
         ldf_ = get_cases_by_region(region='Germany')
         ldf_ = ldf_.reindex(ldf.index)
@@ -1744,7 +1746,7 @@ def get_rki_df(state=None, county=None, time_anchor_column_name='Refdatum', repl
 
     return ldf
 
-def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall'):
+def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum', count_column_name='AnzahlFall', last_date=None):
     ldf = in_df.copy()
     if state is not None:
         ldf = ldf[ldf['Bundesland'].str.contains(state)].copy()
@@ -1753,14 +1755,22 @@ def timeline(in_df, state=None, county=None, time_anchor_column_name='Refdatum',
     ldf[time_anchor_column_name] = pd.to_datetime(ldf[time_anchor_column_name]).dt.tz_localize(None)
     ldf = ldf.set_index(time_anchor_column_name)
     ldf.index.name = 'index'
-    lds = ldf[count_column_name].resample('D').sum()
+    lds = ldf[count_column_name].copy()
+    if last_date is not None:
+        # print('ld: {}'.format(last_date))
+        if last_date not in lds.index:
+            lds.loc[last_date] = 0
+        # print(lds.loc[last_date])
+        # print(lds.tail())
+    lds = lds.resample('D').sum()
+    # print(lds.tail())
     return lds
 
 
-def create_rki_df(in_df, state=None, county=None, time_anchor_column_name='Meldedatum'):
-    lds_confirmed = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlFall')
-    lds_recovered = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlGenesen')
-    lds_death = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlTodesfall')
+def create_rki_df(in_df, state=None, county=None, time_anchor_column_name='Refdatum', last_date=None):
+    lds_confirmed = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlFall', last_date=last_date)
+    lds_recovered = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlGenesen', last_date=last_date)
+    lds_death = timeline(in_df, state=state, county=county, time_anchor_column_name=time_anchor_column_name, count_column_name='AnzahlTodesfall', last_date=last_date)
     ldf = pd.DataFrame()
     ldf['confirmed'] = lds_confirmed.cumsum()
     ldf['recovered'] = lds_recovered.cumsum()
