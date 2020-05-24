@@ -1839,8 +1839,12 @@ def get_spain_df():
 
     fname = spain_df_url
     alternative_spain_data = pd.read_csv(fname)
+    alternative_spain_data['altas'] = alternative_spain_data['altas'].fillna(method='ffill')
+    alternative_spain_data.fillna(0.0, inplace=True)
+    print('read csv')
     dates = pd.to_datetime(pd.to_datetime(alternative_spain_data['fecha']).dt.date)
-    alternative_spain_data = alternative_spain_data.rename(columns={"casos_total": "confirmed", "fallecimientos": "death", "altas": "recovered"})
+    # alternative_spain_data['casos_total'] = alternative_spain_data['casos_pcr'] + alternative_spain_data['casos_test_ac']
+    alternative_spain_data = alternative_spain_data.rename(columns={"casos_pcr": "confirmed", "fallecimientos": "death", "altas": "recovered"})
     alternative_spain_data = alternative_spain_data[['confirmed', 'recovered', 'death']].copy()
     for property in ['confirmed', 'recovered', 'death']:
         diff = alternative_spain_data[property].values[1:] - alternative_spain_data[property].values[:-1]
