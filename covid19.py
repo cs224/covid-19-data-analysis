@@ -285,8 +285,17 @@ class CasesByRegion():
             # f2 = FitSig   (fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.2, -10])
             # f2.fit()
 
-            f3 = FitSigExt(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.1, -10, 100])
-            f3.fit()
+            f3_1 = FitSigExt(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.1, -10, 100])
+            f3_1.fit()
+
+            f3_2 = FitSigExt(fit_df.x, fit_df.confirmed, fit_df.new_confirmed, [max_value * 3 / 2, 0.5, -10, 100])
+            f3_2.fit()
+
+            if f3_2.seor() < f3_1.seor():
+                f3 = f3_2
+            else:
+                f3 = f3_1
+
             self.f3 = f3
 
             f2_p0 = np.array([f2.f_derivative.popt[0], f2.f_derivative.popt[1], f2.f_derivative.popt[1], f2.f_derivative.popt[2]])
